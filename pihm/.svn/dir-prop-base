@@ -1,0 +1,36 @@
+K 10
+svn:ignore
+V 264
+ID
+autogen.sh
+Makefile
+Makefile.in
+Makefile.win.rules
+aclocal.m4
+compile
+config.guess
+config.log
+config.status
+config.sub
+configure
+libtool
+ltmain.sh
+qgis.spec
+qgsconfig.h
+qgsconfig.h.in
+qgssvnversion.h
+stamp-h1
+*.pcs
+*.kdevses
+*.loT
+*.in
+.deps
+.libs
+build
+*.diff
+
+K 19
+svnmerge-integrated
+V 18
+/trunk/qgis:1-5296
+END

@@ -1,0 +1,296 @@
+8
+
+dir
+10938
+https://svn.osgeo.org/qgis/branches/Release-1_0_2
+https://svn.osgeo.org/qgis
+
+
+
+2009-04-23T22:02:27.216467Z
+10639
+timlinux
+has-props
+
+svn:special svn:externals svn:needs-lock
+
+
+
+
+
+
+
+
+
+
+
+c8812cc2-4d05-0410-92ff-de0c093fc19c
+
+cmake
+dir
+
+python
+dir
+
+debian
+dir
+
+Doxyfile
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+411f91075b96fc4af96fa77a65d96d33
+2008-10-28T23:00:54.668407Z
+9554
+wonder
+
+AUTHORS
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+88b65d3f786af4a52952a2ff7e74aa73
+2009-03-21T21:09:06.272806Z
+10388
+macho
+has-props
+
+qgis_help.man
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+2ff60a9195e37e2e95ba35e657a79265
+2008-04-14T21:30:22.201420Z
+8351
+jef
+
+src
+dir
+
+scripts
+dir
+
+Exception_to_GPL_for_Qt.txt
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+a3ed8a64d7f6f066877a496e8698702a
+2005-05-13T05:52:45.000000Z
+3368
+gsherman
+has-props
+
+CONTRIBUTORS
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+1954e5f0172145479f1697abe5a7d861
+2008-12-12T21:50:47.840977Z
+9777
+timlinux
+
+BUGS
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+cbffdaae95b7b2aa08a93fbc48e4b8aa
+2008-11-15T06:10:32.459219Z
+9638
+timlinux
+has-props
+
+tools
+dir
+
+mac
+dir
+
+tests
+dir
+
+CODING
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+31aae46a1831d0c02341df405dff5411
+2008-11-16T22:28:51.285387Z
+9647
+timlinux
+
+images
+dir
+
+doc
+dir
+
+INSTALL
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+7d78a177cd73678aadcefbc276c72b09
+2008-12-14T08:14:03.573592Z
+9791
+timlinux
+has-props
+
+ms-windows
+dir
+
+COPYING
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+81ce4ca02e437dacf24052a6eb66f56e
+2004-07-14T21:47:50.000000Z
+1763
+gsherman
+has-props
+
+CMakeLists.txt
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+f58fd94d6f484827c6760e18d0405ca0
+2009-02-18T08:42:45.289454Z
+10197
+timlinux
+
+.cvsignore
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+f0478ea1e0188fc002638dbab912be92
+2007-01-09T02:39:15.173934Z
+6415
+wonder
+has-props
+
+qgis.dtd
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+1dd474716648de7ed3d379118eacd814
+2006-02-28T19:35:53.196485Z
+4927
+mhugent
+has-props
+
+i18n
+dir
+
+SPONSORS
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+0a2295835d3936fe788f0f37f13c8c72
+2008-11-24T19:29:49.099805Z
+9699
+jef
+
+ChangeLog
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+1655f34858a4b27819cdf607afd29401
+2009-02-18T22:30:57.353994Z
+10203
+timlinux
+has-props
+
+README
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+882742f5fc148abdd550ca31043320cb
+2008-07-08T10:45:42.702684Z
+8735
+rduivenvoorde
+has-props
+
+cmake_templates
+dir
+
+PROVENANCE
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+4c122f5dd86c7541511e72ee881173c1
+2008-05-21T17:29:32.555907Z
+8486
+timlinux
+
+TODO
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+d41d8cd98f00b204e9800998ecf8427e
+2008-02-07T05:43:26.414742Z
+8112
+gsherman
+
+resources
+dir
+
+qgis.man
+file
+
+
+
+
+2009-06-17T07:50:25.000000Z
+79a105e10dac05748fd72ac30553e0a9
+2008-04-14T21:30:22.201420Z
+8351
+jef
+has-props
+
