@@ -1,738 +1,1462 @@
 #include "stdafx.h"
 #include "fvhmcomponent.h"
-#include "core/idbasedcomponentdataitem.h"
-#include "core/dimension.h"
+#include "fvhmcomponentinfo.h"
+#include "controlvolume.h"
+#include "core/idbasedargument.h"
 #include "core/valuedefinition.h"
-#include "core/idbasedcomponentdataitem.h"
+#include "core/idbasedexchangeitems.h"
 #include "core/componentstatuschangeeventargs.h"
 #include "core/unit.h"
-#include "core/swmm5.h"
-#include "core/funcs.h"
-#include "fvhmcomponentinfo.h"
-#include "fvhmtimeseriesexchangeitems.h"
+#include "core/idbasedargument.h"
+#include "core/dimension.h"
+#include "spatial/octree.h"
+#include "spatial/tinargument.h"
+#include "spatial/polyhedralsurface.h"
+#include "spatial/polygon.h"
+#include "spatial/edge.h"
+#include "spatial/geometryfactory.h"
+#include "temporal/timeseriesargument.h"
+#include "temporal/timedata.h"
+#include "inletoutletflowbc.h"
+#include "wsebc.h"
+#include "initialwsebc.h"
+#include "outletwseslope.h"
+#include "precipbc.h"
+#include "cvwseoutput.h"
+#include "cvdepthoutput.h"
+#include "inflowinput.h"
+#include "criticaldepthoutflowbc.h"
+#include "spatial/geometryexchangeitems.h"
+#include "core/abstractadaptedoutput.h"
+#include "progresschecker.h"
+#include "temporal/temporalinterpolationfactory.h"
+#include "edgefluxesio.h"
 
 #include <QDebug>
 #include <QDir>
+#include <QDateTime>
+#include <math.h>
 
-using namespace SDKTemporal;
+#include "netcdf"
 
-FVHMComponent::FVHMComponent(const QString &id, FVHMComponent *component)
-  :AbstractModelComponent(id,component),
-    m_identifiersArgument(nullptr),
-    m_inputFilesArgument(nullptr),
-    m_usedNodesArgument(nullptr),
-    m_usedLinksArgument(nullptr),
-    m_usedSubCatchmentsArgument(nullptr),
-    m_SWMMProject(nullptr),
-    m_initialized(false),
-    m_prepared(false),
-    m_currentProgress(0)
+#ifdef USE_OPENMP
+#include <omp.h>
+#endif
+
+#ifdef USE_MPI
+#include <mpi.h>
+#endif
+
+#include "HYPRE.h"
+#include "HYPRE_utilities.h"
+#include "HYPRE_parcsr_ls.h"
+#include "HYPRE_krylov.h"
+#include "HYPRE_seq_mv.h"
+#include "HYPRE_parcsr_mv.h"
+#include "_hypre_parcsr_mv.h"
+
+using namespace netCDF;
+using namespace netCDF::exceptions;
+using namespace std;
+using namespace HydroCouple;
+using namespace HydroCouple::Spatial;
+using namespace HydroCouple::Temporal;
+using namespace HydroCouple::SpatioTemporal;
+
+
+FVHMComponent::FVHMComponent(const QString &id, FVHMComponentInfo* componentInfo)
+  :AbstractModelComponent(id,componentInfo),
+    m_TINMeshArgument(nullptr)
 {
-  m_startDateTime = new Time(this);
-  m_endDateTime = new Time(this);
-  m_currentDateTime = new Time(this);
+  m_epsilon = std::numeric_limits<double>::epsilon();
+  m_octree = new Octree(Octree::Octree2D, Octree::AlongEnvelopes,10,1000);
+  createDimensions();
   createArguments();
+  createAdaptedOutputFactories();
 }
 
-FVHMComponent::FVHMComponent(const QString &id, const QString &caption, FVHMComponent *component)
-  :AbstractModelComponent(id, caption, component),
-    m_identifiersArgument(nullptr),
-    m_inputFilesArgument(nullptr),
-    m_usedNodesArgument(nullptr),
-    m_usedLinksArgument(nullptr),
-    m_usedSubCatchmentsArgument(nullptr),
-    m_SWMMProject(nullptr),
-    m_currentProgress(0)
+FVHMComponent::FVHMComponent(const QString &id, const QString &caption, FVHMComponentInfo* componentInfo)
+  :AbstractModelComponent(id, caption, componentInfo),
+    m_TINMeshArgument(nullptr)
 {
-  m_startDateTime = new Time(this);
-  m_endDateTime = new Time(this);
-  m_currentDateTime = new Time(this);
+  m_epsilon = std::numeric_limits<double>::epsilon();
+  m_octree = new Octree(Octree::Octree2D, Octree::AlongEnvelopes,10,1000);
+  createDimensions();
   createArguments();
+  createAdaptedOutputFactories();
 }
 
 FVHMComponent::~FVHMComponent()
 {
-  if(m_SWMMProject)
+  delete m_octree;
+  deleteControlVolumes();
+
+  if(m_outputNetCDF)
   {
-    swmm_end(m_SWMMProject);
-    swmm_close(m_SWMMProject);
+    delete m_outputNetCDF;
+    m_outputNetCDF = nullptr;
   }
-}
-
-void FVHMComponent::createArguments()
-{
-
-  //Identifiers
-  {
-    Dimension *identifierDimension = new Dimension("IdentifierDimension",3,HydroCouple::ConstantLength, this);
-    QStringList identifiers;
-    identifiers.append("Id");
-    identifiers.append("Caption");
-    identifiers.append("Description");
-    Quantity* quantity = Quantity::unitLessValues("IdentifiersUnit","", QVariant::String , this);
-
-    m_identifiersArgument = new IdBasedArgumentQString("Identifiers", identifiers,identifierDimension,quantity,this);
-    m_identifiersArgument->setCaption("Model Identifiers");
-
-    int index = m_identifiersArgument->identifiers().indexOf("Id");
-    if(index > -1)
-    {
-      m_identifiersArgument->setValue(&index , id());
-    }
-
-    index = m_identifiersArgument->identifiers().indexOf("Caption");
-    if(index > -1)
-    {
-      m_identifiersArgument->setValue(&index , caption());
-    }
-
-    index = m_identifiersArgument->identifiers().indexOf("Description");
-    if(index > -1)
-    {
-      m_identifiersArgument->setValue(&index , description());
-    }
-
-    m_identifiersArgument->addInputFileTypeFilter("Input XML File (*.xml)");
-    m_identifiersArgument->setMatchIdentifiersWhenReading(true);
-
-    addArgument(m_identifiersArgument);
-  }
-
-  //Input files
-  {
-    Dimension *inputFileDimension = new Dimension("Input File Dimension",3,HydroCouple::ConstantLength,this);
-    QStringList fidentifiers;
-    fidentifiers.append("Input File");
-    fidentifiers.append("Output File");
-    fidentifiers.append("Report File");
-    Quantity* fquantity = Quantity::unitLessValues("InputFilesUnit", "", QVariant::String, this);
-    m_inputFilesArgument = new IdBasedArgumentQString("InputFiles", fidentifiers,inputFileDimension,fquantity,this);
-    m_inputFilesArgument->setCaption("Model Input Files");
-    m_inputFilesArgument->addInputFileTypeFilter("Input XML File (*.xml)");
-    m_inputFilesArgument->setMatchIdentifiersWhenReading(true);
-
-    addArgument(m_inputFilesArgument);
-  }
-
-
-  //Node exchange items
-  {
-    Quantity *exchangeItemQuantity = Quantity::unitLessValues("ExchangeItemUnit","", QVariant::String , this);
-
-    Dimension *nodeExchangeDimension = new Dimension("NodeExchangeItemsDimension",1, HydroCouple::ConstantLength, this);
-    m_usedNodesArgument = new Argument1DString("NodeExchangeItems",nodeExchangeDimension,exchangeItemQuantity,this);
-    m_usedNodesArgument->setCaption("Node Exchange Items");
-    m_usedNodesArgument->addInputFileTypeFilter("Input XML File (*.xml)");
-    addArgument(m_usedNodesArgument);
-
-    Dimension *linksExchangeDimension = new Dimension("LinksExchangeItemsDimension",1, HydroCouple::ConstantLength, this);
-    m_usedLinksArgument = new Argument1DString("LinkExchangeItems",linksExchangeDimension,exchangeItemQuantity,this);
-    m_usedLinksArgument->setCaption("Link Exchange Items");
-    m_usedLinksArgument->addInputFileTypeFilter("Input XML File (*.xml)");
-    addArgument(m_usedLinksArgument);
-
-    Dimension *subCatchmentsExchangeDimension = new Dimension("SubCatchmentsExchangeItemsDimension",1, HydroCouple::ConstantLength, this);
-    m_usedSubCatchmentsArgument = new Argument1DString("SubCatchmentsExchangeItems", subCatchmentsExchangeDimension,exchangeItemQuantity,this);
-    m_usedSubCatchmentsArgument->setCaption("SubCatchment Exchange Items");
-    m_usedSubCatchmentsArgument->addInputFileTypeFilter("Input XML File (*.xml)");
-    addArgument(m_usedSubCatchmentsArgument);
-  }
-}
-
-void FVHMComponent::initializeSWMMProject()
-{
-  disposeSWMMProject();
-
-  QString inputFile = m_inputFiles["InputFile"].absoluteFilePath();
-  char *inpF = new char[inputFile.length() + 1] ;
-  std::strcpy (inpF, inputFile.toStdString().c_str());
-
-  QString outputFile = m_inputFiles["OutputFile"].absoluteFilePath();
-  char *inpO = new char[outputFile.length() + 1] ;
-  std::strcpy (inpO, outputFile.toStdString().c_str());
-
-  QString reportFile = m_inputFiles["ReportFile"].absoluteFilePath();
-  char *inpR = new char[reportFile.length() + 1] ;
-  std::strcpy (inpR, reportFile.toStdString().c_str());
-
-  m_SWMMProject = swmm_open(inpF,inpR,inpO);
-
-  delete[] inpF;
-  delete[] inpO;
-  delete[] inpR;
-
-  int y, m, d, h, mm, s;
-  datetime_decodeDateTime(m_SWMMProject->StartDateTime, &y,&m,&d,&h,&mm,&s);
-  m_startDateTime->setDateTime(QDateTime(QDate(y,m,d),QTime(h,mm,s)));
-  m_currentDateTime->setDateTime(m_startDateTime->qDateTime());
-
-  datetime_decodeDateTime(m_SWMMProject->EndDateTime, &y,&m,&d,&h,&mm,&s);
-  m_endDateTime->setDateTime(QDateTime(QDate(y,m,d),QTime(h,mm,s)));
-}
-
-void FVHMComponent::disposeSWMMProject()
-{
-  if(m_SWMMProject)
-  {
-    swmm_end(m_SWMMProject);
-
-    if (m_SWMMProject->Fout.mode == SCRATCH_FILE)
-    {
-      swmm_report(m_SWMMProject);
-    }
-
-    swmm_close(m_SWMMProject);
-    m_SWMMProject = nullptr;
-  }
-  else
-  {
-    qDebug() << "";
-  }
-
-}
-
-Project *FVHMComponent::SWMMProject() const
-{
-  return m_SWMMProject;
-}
-
-Time* FVHMComponent::startDateTime() const
-{
-  return m_startDateTime;
-}
-
-Time* FVHMComponent::endDateTime() const
-{
-  return m_endDateTime;
-}
-
-Time* FVHMComponent::currentDateTime() const
-{
-  return m_currentDateTime;
-}
-
-void FVHMComponent::initialize()
-{
-  if(status() == HydroCouple::Created)
-  {
-    setStatus(HydroCouple::Initializing , "Initializing FVHM Model");
-
-    QString message;
-
-    if(initializeArguments(message))
-    {
-      initializeSWMMProject();
-
-      if(!hasError(message))
-      {
-        clearInputExchangeItems();
-        clearOutputExchangeItems();
-
-        initializeNodeInputExchangeItems();
-        initializeLinkInputExchangeItems();
-        initializeSubCatchmentInputExchangeItems();
-
-        initializeNodeOutputExchangeItems();
-        initializeLinkOutputExchangeItems();
-        initializeSubCatchmentOutputExchangeItems();
-
-        setStatus(HydroCouple::Initialized , "Initialized FVHM Model");
-        m_initialized = true;
-      }
-      else
-      {
-        setStatus(HydroCouple::Failed , message);
-        m_initialized = false;
-      }
-    }
-    else
-    {
-      setStatus(HydroCouple::Failed , message);
-      m_initialized = false;
-    }
-  }
-  else
-  {
-    //throw exception here.
-    m_initialized = false;
-  }
-}
-
-bool FVHMComponent::initializeArguments(QString &message)
-{
-  m_inputFiles.clear();
-  int stride = 1;
-
-  //Identifiers
-  {
-
-
-    int index = m_identifiersArgument->identifiers().indexOf("Id");
-    if(index > -1)
-    {
-      QString identifier;
-      m_identifiersArgument->getValues(&index, &stride, &identifier);
-      setId(identifier);
-    }
-
-    index = m_identifiersArgument->identifiers().indexOf("Caption");
-    if(index > -1)
-    {
-      QString caption;
-      m_identifiersArgument->getValues(&index, &stride, &caption);
-      setCaption(caption);
-    }
-
-    index = m_identifiersArgument->identifiers().indexOf("Description");
-    if(index > -1)
-    {
-      QString description;
-      m_identifiersArgument->getValues(&index, &stride, &description);
-      setDescription(description);
-    }
-  }
-
-  //input files
-  {
-
-    int index = m_inputFilesArgument->identifiers().indexOf("Input File");
-    if(index > -1)
-    {
-      QString inputFilePath;
-      m_inputFilesArgument->getValues(&index, &stride, &inputFilePath);
-      QFileInfo inputFile(inputFilePath);
-
-      if(!inputFile.exists())
-      {
-        message = "Input file does not exist: " + inputFile.absoluteFilePath();
-        return false;
-      }
-      else
-      {
-        m_inputFiles["InputFile"] = inputFile;
-      }
-    }
-    else
-    {
-      message = "Input file has not been specified";
-      return false;
-    }
-
-    index = m_inputFilesArgument->identifiers().indexOf("Output File");
-    if(index > -1)
-    {
-      QString outputFilePath;
-      m_inputFilesArgument->getValues(&index, &stride, &outputFilePath);
-      QFileInfo outputFile(outputFilePath);
-
-      if(!outputFile.absoluteDir().exists())
-      {
-        message = "Output file directory does not exist: " + outputFile.absolutePath();
-        return false;
-      }
-      else
-      {
-        m_inputFiles["OutputFile"] = outputFile;
-      }
-    }
-    else
-    {
-      message = "Output file has not been specified";
-      return false;
-    }
-
-    index = m_inputFilesArgument->identifiers().indexOf("Report File");
-    if(index > -1)
-    {
-      QString reportFilePath;
-      m_inputFilesArgument->getValues(&index, &stride, &reportFilePath);
-      QFileInfo reportFile(reportFilePath);
-
-      if(!reportFile.absoluteDir().exists())
-      {
-        message = "Report file directory does not exist: " + reportFile.absolutePath();
-        return false;
-      }
-      else
-      {
-        m_inputFiles["ReportFile"] = reportFile;
-      }
-    }
-    else
-    {
-      message = "Report file has not been specified";
-      return false;
-    }
-  }
-
-  //Objects to expose as exchangeitems
-  {
-    int length;
-    if((length = m_usedNodesArgument->dimensions()[0]->length()))
-    {
-      m_usedNodes.clear();
-      std::vector<QString> values(length);
-
-      int index = 0;
-      m_usedNodesArgument->getValues(&index,&length,values.data());
-
-      for(int i = 0 ; i < length; i++)
-      {
-        m_usedNodes.append(values[i]);
-      }
-
-    }
-
-    if((length = m_usedLinksArgument->dimensions()[0]->length()))
-    {
-      m_usedLinks.clear();
-      std::vector<QString> values(length);
-
-      int index = 0;
-      m_usedLinksArgument->getValues(&index,&length,values.data());
-
-      for(int i = 0 ; i < length; i++)
-      {
-        m_usedLinks.append(values[i]);
-      }
-    }
-
-    if((length = m_usedSubCatchmentsArgument->dimensions()[0]->length()))
-    {
-      m_usedSubCatchments.clear();
-      std::vector<QString> values(length);
-
-      int index = 0;
-      m_usedSubCatchmentsArgument->getValues(&index,&length,values.data());
-
-      for(int i = 0 ; i < length; i++)
-      {
-        m_usedSubCatchments.append(values[i]);
-      }
-    }
-  }
-
-  return true;
-}
-
-void FVHMComponent::initializeNodeInputExchangeItems()
-{
-  if(m_usedNodes.count())
-  {
-    int numNodes = m_usedNodes.length();
-
-    Unit *waterSurfaceElevationUnit = Unit::lengthInFeet(this);
-    waterSurfaceElevationUnit->setCaption("Elevation (ft)");
-    Quantity *waterSurfaceElevation = new Quantity("Water Surface Elevation (ft)", QVariant::Double, waterSurfaceElevationUnit, this);
-
-    Unit *lateralInflowUnit = Unit::flowInCFS(this);
-    Quantity *lateralInflow = new Quantity("Flow (m³/s)" , QVariant::Double,lateralInflowUnit,this);
-
-    for(int i = 0 ; i <  numNodes; i++)
-    {
-      char *nodeId = new char[m_usedNodes[i].length() + 1] ;
-      std::strcpy (nodeId, m_usedNodes[i].toStdString().c_str());
-
-      int index = project_findObject(m_SWMMProject , NODE , nodeId);
-
-      if(index >= 0)
-      {
-        FVHMNodeWSETimeSeriesInput *inputWSEItem = new FVHMNodeWSETimeSeriesInput(&m_SWMMProject->Node[index],
-                                                                                  new Dimension(QString(m_SWMMProject->Node[index].ID) + " Time Dimension" , 1, HydroCouple::DynamicLength , this),
-                                                                                  QList<Time*>({new Time(m_startDateTime->qDateTime())}),
-                                                                                  waterSurfaceElevation,
-                                                                                  this);
-
-        inputWSEItem->setCaption(" Water Surface Elevation (ft) - " + QString(m_SWMMProject->Node[index].ID) );
-        addInputExchangeItem(inputWSEItem);
-
-        FVHMNodeLatInflowTimeSeriesInput *inputLatInfItem = new FVHMNodeLatInflowTimeSeriesInput(&m_SWMMProject->Node[index],
-                                                                                                 new Dimension(QString(m_SWMMProject->Node[index].ID) + " Time Dimension" , 1, HydroCouple::DynamicLength , this),
-                                                                                                 QList<Time*>({new Time(m_startDateTime->qDateTime())}),
-                                                                                                 lateralInflow,
-                                                                                                 this);
-
-        inputLatInfItem->setCaption("Lateral Inflow (m³/s) - " + QString(m_SWMMProject->Node[index].ID));
-        addInputExchangeItem(inputLatInfItem);
-      }
-
-      delete[] nodeId;
-    }
-  }
-}
-
-void FVHMComponent::initializeLinkInputExchangeItems()
-{
-
-}
-
-void FVHMComponent::initializeSubCatchmentInputExchangeItems()
-{
-
-}
-
-void FVHMComponent::initializeNodeOutputExchangeItems()
-{
-  //Water Surface Elevation
-  if(m_usedNodes.count())
-  {
-    int numNodes = m_usedNodes.length();
-
-    Unit* waterSurfaceElevationUnit = Unit::lengthInFeet(this);
-    waterSurfaceElevationUnit->setCaption("Elevation (ft)");
-    Quantity* waterSurfaceElevation = new Quantity("Water Surface Elevation (ft)", QVariant::Double, waterSurfaceElevationUnit, this);
-
-    for(int i = 0 ; i <  numNodes; i++)
-    {
-      char *nodeId = new char[m_usedNodes[i].length() + 1] ;
-      std::strcpy (nodeId, m_usedNodes[i].toStdString().c_str());
-
-      int index = project_findObject(m_SWMMProject , NODE , nodeId);
-
-      if(index >= 0)
-      {
-        FVHMNodeWSETimeSeriesOutput *outputItem = new FVHMNodeWSETimeSeriesOutput(&m_SWMMProject->Node[index],
-                                                                                  new Dimension(QString(m_SWMMProject->Node[index].ID) + " Time Dimension" , 1, HydroCouple::DynamicLength , this),
-                                                                                  QList<Time*>({new Time(m_startDateTime->qDateTime())}),
-                                                                                  waterSurfaceElevation,
-                                                                                  this);
-
-        outputItem->setCaption("Water Surface Elevation (ft) - "+ QString(m_SWMMProject->Node[index].ID));
-        addOutputExchangeItem(outputItem);
-      }
-
-      delete[] nodeId;
-    }
-  }
-}
-
-void FVHMComponent::initializeLinkOutputExchangeItems()
-{
-  //Water Surface Elevation
-  if(m_usedLinks.count())
-  {
-    int numLinks = m_usedLinks.length();
-
-    Unit *flowUnit = Unit::flowInCFS(this);
-    Quantity *flow = new Quantity("Discharge (cfs)" , QVariant::Double,flowUnit,this);
-
-    for(int i = 0 ; i <  numLinks; i++)
-    {
-      char *linkId = new char[m_usedLinks[i].length() + 1] ;
-      std::strcpy (linkId, m_usedLinks[i].toStdString().c_str());
-
-      int index = project_findObject(m_SWMMProject , LINK , linkId);
-
-      if(index >= 0)
-      {
-        FVHMLinkDischargeTimeSeriesOutput *outputItem = new FVHMLinkDischargeTimeSeriesOutput(&m_SWMMProject->Link[index],
-                                                                                              new Dimension(QString(m_SWMMProject->Node[index].ID) + " Time Dimension" , 1, HydroCouple::DynamicLength , this),
-                                                                                              QList<Time*>({new Time(m_startDateTime->qDateTime())}),
-                                                                                              flow,
-                                                                                              this);
-
-        outputItem->setCaption("Discharge (m³/s) - "+QString(m_SWMMProject->Link[index].ID));
-        addOutputExchangeItem(outputItem);
-      }
-
-      delete[] linkId;
-    }
-  }
-}
-
-void FVHMComponent::initializeSubCatchmentOutputExchangeItems()
-{
-
-}
-
-bool FVHMComponent::hasError(QString &message)
-{
-  int error = m_SWMMProject->ErrCode;
-
-  if(error)
-  {
-    message = QString(getErrorMsg(m_SWMMProject->ErrCode)).trimmed();
-    return true;
-  }
-  else
-  {
-    return false;
-  }
-}
-
-HydroCouple::IModelComponent* FVHMComponent::clone()
-{
-  return nullptr;
-
 }
 
 QList<QString> FVHMComponent::validate()
 {
-  if(m_initialized)
-  {
-    setStatus(HydroCouple::Validating,"Validating FVHM Model");
+  //check if mesh available
 
-    //check connections
+  //check time step options
 
-    setStatus(HydroCouple::Valid,"FVHM Model Is Valid");
-
-  }
-  else
-  {
-    //throw has not been initialized yet.
-  }
+  //check
 
   return QList<QString>();
 }
 
 void FVHMComponent::prepare()
 {
-  if(m_initialized)
+  if(!isPrepared())
   {
-    setStatus(HydroCouple::Preparing , "Preparing FVHM Model");
+    m_timeStepCount = 0;
+    m_convergedCount = 0;
 
-    m_usedInputs.clear();
+    initializeAdaptedOutputs();
 
-    QList<HydroCouple::IInput*> inputExchangeItems = inputs();
+    applyInitialBoundaryConditions();
 
-    for(HydroCouple::IInput *input : inputExchangeItems)
+    updateOutputValues(QList<HydroCouple::IOutput*>());
+
+    writeOutputs();
+    m_nextOutputTime = m_nextOutputTime + (m_outputTimeStep / 1440.00);
+
+    setPrepared(true);
+    setStatus(IModelComponent::Updated,"");
+    m_initTimeStepCycle = 0;
+    m_printFrequencyCounter = 0;
+  }
+}
+
+void FVHMComponent::update(const QList<HydroCouple::IOutput*> &requiredOutputs)
+{
+  if(status() == IModelComponent::Updated)
+  {
+    setStatus(IModelComponent::Updating);
+
+    m_printFrequencyCounter++;
+
+    //get minimum time being requested from outputs
+    double outputDataItemsMinTime = getMinOutputTime(requiredOutputs);
+
+    //check if iteration or move to next time step
+    bool moveToNextTimeStep = outputDataItemsMinTime <= m_currentDateTime &&
+                              m_currentDateTime != m_startDateTime ? false : true;
+
+    if(moveToNextTimeStep)
     {
-      HydroCouple::IMultiInput* minput  = dynamic_cast<HydroCouple::IMultiInput*>(input);
+      //calculate next time step;
+      m_timeStep = getNextTimeStep();
 
-      if((minput && minput->providers().length()) || input->provider())
+      //update current date time
+      m_currentDateTime = m_currentDateTime + m_timeStep / 86400.0 ;
+
+      m_timeStepCount++;
+    }
+    //or perform iteration
+    else
+    {
+      moveToNextTimeStep = false;
+    }
+
+
+    m_qtDateTime = SDKTemporal::DateTime(m_currentDateTime).dateTime();
+
+    //apply boundary conditions for  next next timestep/current if iteration
+    applyBoundaryConditions(m_currentDateTime);
+
+    //retrive input boundary conditions from exchangedItems overrides internal boundaries
+    applyInputValues();
+
+    //performtimeStep
+    int iterations = 0;
+    int numWetCells = 0;
+
+    QString message = "";
+
+    //residuals
+    double uvelRelResidualNormFin = 0.0, vvelRelResidualNormFin = 0.0,
+        pressureRelRisdualNormFin = 0.0, continuityRelResidualNormFin = 0.0,
+        uvelRelResidualNormInit = 0.0, vvelRelResidualNormInit = 0.0,
+        pressureRelRisdualNormInit = 0.0, continuityRelResidualNormInit = 0.0;
+
+    bool converged = false;
+
+    ErrorCode error = ErrorCode::NoError;
+
+    switch (m_pressureVelocityCouplingType)
+    {
+      case 1:
+        {
+          error = performSimpleCTimeStep(m_timeStep, iterations, numWetCells,
+                                         uvelRelResidualNormInit, uvelRelResidualNormFin,
+                                         vvelRelResidualNormInit, vvelRelResidualNormFin,
+                                         pressureRelRisdualNormInit, pressureRelRisdualNormFin,
+                                         continuityRelResidualNormInit, continuityRelResidualNormFin,
+                                         converged, message);
+        }
+        break;
+      case 2:
+        {
+          error = performPISOTimeStep(m_timeStep, iterations, numWetCells,
+                                      uvelRelResidualNormInit, uvelRelResidualNormFin,
+                                      vvelRelResidualNormInit, vvelRelResidualNormFin,
+                                      pressureRelRisdualNormInit, pressureRelRisdualNormFin,
+                                      continuityRelResidualNormInit, continuityRelResidualNormFin,
+                                      converged, message);
+        }
+        break;
+      default:
+        {
+          error = performSimpleTimeStep(m_timeStep,iterations, numWetCells,
+                                        uvelRelResidualNormInit, uvelRelResidualNormFin,
+                                        vvelRelResidualNormInit, vvelRelResidualNormFin,
+                                        pressureRelRisdualNormInit, pressureRelRisdualNormFin,
+                                        continuityRelResidualNormInit, continuityRelResidualNormFin,
+                                        converged, message);
+        }
+        break;
+    }
+
+    if(m_printFrequencyCounter >= m_printFrequency)
+    {
+      if(m_verbose)
       {
-        FVHMInputObjectItem* inputObject = dynamic_cast<FVHMInputObjectItem*>(input);
-        m_usedInputs.append(inputObject);
+        printf("Residuals\n");
+        printf("dt: %s, ts: %f, u_i: %e, u_f: %e, v_i: %e, v_f: %e, "
+               "c_i: %e, c_f: %e, p_i: %e, p_f: %e, its: %i/%i, conv?: %s, activecells: %i/%i\n",
+               qPrintable(m_qtDateTime.toString(Qt::ISODate)),
+               m_timeStep, uvelRelResidualNormInit, uvelRelResidualNormFin, vvelRelResidualNormInit, vvelRelResidualNormFin,
+               continuityRelResidualNormInit, continuityRelResidualNormFin, pressureRelRisdualNormInit, pressureRelRisdualNormFin,
+               iterations, m_itersPerTimeStep, converged ? "True" : "False" , numWetCells, m_numCells);
+      }
+
+      m_printFrequencyCounter = 0;
+    }
+
+
+    //copy new values to previous
+    if(moveToNextTimeStep)
+    {
+#ifdef USE_OPENMP
+#pragma omp parallel sections
+#endif
+      {
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+        {
+          prepareForNextTimeStep();
+        }
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+        {
+          updateExternalInflowOutflowTotals(m_timeStep);
+        }
       }
     }
 
-    m_usedOutputs.clear();
-
-    QList<HydroCouple::IOutput*> outputExchangeItems = outputs();
-
-    for(HydroCouple::IOutput *output : outputExchangeItems)
+    switch (error)
     {
-      if(output->consumers().length() || output->adaptedOutputs().length())
-      {
-        FVHMOutputObjectItem *outpuObject = dynamic_cast<FVHMOutputObjectItem*>(output);
-        m_usedOutputs.append(outpuObject);
-      }
+      case ErrorCode::SolverFailedToConverge:
+        {
+          //setStatus(HydroCouple::Updated , "FVHM simulation with component id " + id() + " solver failed to converge!", (int)((m_currentDateTime - m_startDateTime) * 100.0 /(m_endDateTime - m_startDateTime)));
+        }
+        break;
+      case ErrorCode::FailedToConverge:
+        {
+          printf("Residuals\n");
+          printf("dt: %s, ts: %f, u_i: %e, u_f: %e, v_i: %e, v_f: %e, "
+                 "c_i: %e, c_f: %e, p_i: %e, p_f: %e, its: %i/%i, conv?: %s, activecells: %i/%i\n",
+                 qPrintable(m_qtDateTime.toString(Qt::ISODate)),
+                 m_timeStep, uvelRelResidualNormInit, uvelRelResidualNormFin, vvelRelResidualNormInit, vvelRelResidualNormFin,
+                 continuityRelResidualNormInit, continuityRelResidualNormFin, pressureRelRisdualNormInit, pressureRelRisdualNormFin,
+                 iterations, m_itersPerTimeStep, converged ? "True" : "False" , numWetCells, m_numCells);
+
+          setStatus(IModelComponent::Updated , "Did not converge for current time step.", (int)((m_currentDateTime - m_startDateTime) * 100.0 /(m_endDateTime - m_startDateTime)));
+        }
+        break;
+      case ErrorCode::CriticalFailure:
+        {
+          printf("Residuals\n");
+          printf("dt: %s, ts: %f, u_i: %e, u_f: %e, v_i: %e, v_f: %e, "
+                 "c_i: %e, c_f: %e, p_i: %e, p_f: %e, its: %i/%i, conv?: %s, activecells: %i/%i\n",
+                 qPrintable(m_qtDateTime.toString(Qt::ISODate)),
+                 m_timeStep, uvelRelResidualNormInit, uvelRelResidualNormFin, vvelRelResidualNormInit, vvelRelResidualNormFin,
+                 continuityRelResidualNormInit, continuityRelResidualNormFin, pressureRelRisdualNormInit, pressureRelRisdualNormFin,
+                 iterations, m_itersPerTimeStep, converged ? "True" : "False" , numWetCells, m_numCells);
+
+          setStatus(IModelComponent::Failed , "Critical failure. Try smaller timestep or relaxation factors.", (int)((m_currentDateTime - m_startDateTime) * 100.0 /(m_endDateTime - m_startDateTime)));
+          return;
+        }
+      case ErrorCode::NoError:
+        {
+          if(moveToNextTimeStep)
+          {
+            m_convergedCount++;
+          }
+        }
+        break;
     }
 
-    swmm_start(m_SWMMProject, TRUE);
-
-    if (m_SWMMProject->ErrorCode)
+    //logging
     {
-      QString message;
-      hasError(message);
-      setStatus(HydroCouple::Failed , message);
-      return;
+      writeToLogFile(iterations,
+                     uvelRelResidualNormInit,uvelRelResidualNormFin,
+                     vvelRelResidualNormInit,vvelRelResidualNormFin,
+                     continuityRelResidualNormInit,continuityRelResidualNormFin,
+                     pressureRelRisdualNormInit,pressureRelRisdualNormFin);
     }
 
-    setStatus(HydroCouple::Updated ,"Finished preparing FVHM Model");
-    m_prepared = true;
-  }
-  else
-  {
-    m_prepared = false;
-    //throw exceptions
-  }
-}
+    updateOutputValues(QList<IOutput*>({}));
 
-void FVHMComponent::update(const QList<HydroCouple::IOutput *> &requiredOutputs)
-{
-  if(status() == HydroCouple::Updated)
-  {
-    setStatus(HydroCouple::Updating , "FVHM simulation with component id " + id() + " is performing time-step" , m_currentProgress);
-
-    updateInputExchangeItems();
-
-    DateTime elapsedTime = 0;
-    swmm_step(m_SWMMProject,&elapsedTime);
-
-    int y, m, d, h, mm, s;
-    datetime_decodeDateTime(m_SWMMProject->StartDateTime + elapsedTime, &y,&m,&d,&h,&mm,&s);
-    m_currentDateTime->setDateTime(QDateTime(QDate(y,m,d),QTime(h,mm,s)));
-
-    if(requiredOutputs.length())
+    //write outputs
+    if(m_currentDateTime != m_previouslyWrittenDateTime && m_currentDateTime >= m_nextOutputTime)
     {
-      updateOutputExchangeItems(requiredOutputs);
+      m_previouslyWrittenDateTime = m_currentDateTime;
+      //      setStatus(HydroCouple::Updating , "Writing output for " + currDt.toString(Qt::ISODate) + " ...",
+      //                (int)((m_currentDateTime - m_startDateTime) * 100.0 /(m_endDateTime - m_startDateTime)));
+
+      writeOutputs();
+
+      m_nextOutputTime = m_nextOutputTime + (m_outputTimeStep / 1440.00);
+
+      //      setStatus(HydroCouple::Updated , "Finished writing output",
+      //                (int)((m_currentDateTime - m_startDateTime) * 100.0 /(m_endDateTime - m_startDateTime)));
+    }
+
+    //check if simulation has been completed
+    if(m_currentDateTime >=  m_endDateTime)
+    {
+      setStatus(IModelComponent::Done , "Simulation Finished successfully!",100);
+    }
+    else if(progressChecker()->performStep(m_currentDateTime))
+    {
+      setStatus(IModelComponent::Updated, "Current DateTime: " + m_qtDateTime.toString(Qt::ISODate), progressChecker()->progress());
     }
     else
     {
-      updateOutputExchangeItems();
-    }
-
-    QString errMessage;
-
-    if(elapsedTime <= 0 && !m_SWMMProject->ErrCode)
-    {
-      setStatus(HydroCouple::Done , "FVHM simulation with component id " + id() + " finished successfully",100);
-    }
-    else if(hasError(errMessage))
-    {
-      setStatus(HydroCouple::Failed ,  "FVHM simulation with component id " + id() + " failed with error message : " + errMessage);
-    }
-    else
-    {
-      double progress = (elapsedTime) * 100.0
-                        / (m_SWMMProject->EndDateTime - m_SWMMProject->StartDateTime);
-
-      m_currentProgress = (int) progress;
-      setStatus(HydroCouple::Updated , "FVHM simulation with component id " + id() + " performed time-step to " + m_currentDateTime->qDateTime().toString(Qt::ISODate) , m_currentProgress);
-    }
-  }
-  else
-  {
-    qDebug() << "";
-  }
-}
-
-void FVHMComponent::updateInputExchangeItems()
-{
-  for(FVHMInputObjectItem *input : m_usedInputs)
-  {
-    input->retrieveOuputItemData();
-  }
-}
-
-void FVHMComponent::updateOutputExchangeItems()
-{
-  for(FVHMOutputObjectItem *output : m_usedOutputs)
-  {
-    output->retrieveDataFromModel();
-  }
-}
-
-void FVHMComponent::updateOutputExchangeItems(const QList<HydroCouple::IOutput *> &requiredOutputs)
-{
-  for(HydroCouple::IOutput *output : requiredOutputs)
-  {
-    FVHMOutputObjectItem *outputItem = dynamic_cast<FVHMOutputObjectItem*>(output);
-
-    if(outputItem)
-    {
-      outputItem->retrieveDataFromModel();
+      setStatus(IModelComponent::Updated);
     }
   }
 }
 
 void FVHMComponent::finish()
 {
-  if(m_prepared)
+  if(isPrepared())
   {
-    setStatus(HydroCouple::Finishing , "FVHM simulation with component id " + id() + " is being disposed" , 100);
+    setStatus(IModelComponent::Finishing , "");
 
-    clearInputExchangeItems();
-    clearOutputExchangeItems();
+    if(m_outputNetCDF)
+    {
+      delete m_outputNetCDF;
+      m_outputNetCDF = nullptr;
+    }
 
-    disposeSWMMProject();
+    closeOutputCSVFile();
+    closeLogFile();
 
-    m_prepared = false;
-    m_initialized = false;
+    setPrepared(false);
+    setInitialized(false);
 
-    setStatus(HydroCouple::Finished , "FVHM simulation with component id " + id() + " has been disposed" , 100);
-    setStatus(HydroCouple::Created , "FVHM simulation with component id " + id() + " ran successfully and has been re-created" , 100);
-
+    setStatus(IModelComponent::Finished , "");
+    setStatus(IModelComponent::Created , "");
   }
 }
+
+double FVHMComponent::startDateTime() const
+{
+  return m_startDateTime;
+}
+
+double FVHMComponent::endDateTime() const
+{
+  return m_endDateTime;
+}
+
+double FVHMComponent::currentDateTime() const
+{
+  return m_currentDateTime;
+}
+
+void FVHMComponent::intializeFailureCleanUp()
+{
+  closeLogFile();
+}
+
+void FVHMComponent::createDimensions()
+{
+  m_patchDimension = new Dimension("PatchDimension", "Dimension for control volume patches",this);
+  m_edgeDimension = new Dimension("EdgeDimension","Dimension for control volume edges",this);
+  m_nodeDimension = new Dimension("NodeDimension","Dimension for control volume nodes",this);
+  m_idDimension = new Dimension("IdDimension","Dimension for identifiers",this);
+  m_timeDimension = new Dimension("TimeSeriesDimension","Dimension for times", this);
+  m_geometryDimension = new Dimension("GeometryDimension","Dimension for geometries", this);
+}
+
+void FVHMComponent::createArguments()
+{
+  createMeshArguments();
+  createTimeArguments();
+  createInputFilesArguments();
+  createOutputFilesArguments();
+  createEdgeFluxesIOArguments();
+  createConvergenceArguments();
+  createSolverOptionsArguments();
+  createAdvectionDiffusionSchemeArguments();
+  createPressureVelCouplingArguments();
+  createWettingAndDryingArguments();
+  createInitialUniformBCArguments();
+  createMiscOptionsArguments();
+  createInletOutletFlowBCArguments();
+  createWSEBCArguments();
+  createCriticalDepthOutflowBCArguments();
+  createInitialWSEBCArguments();
+  createWSESlopeArguments();
+  createSourceSinkFlowsBCArguments();
+  createPrecipitationArguments();
+}
+
+void FVHMComponent::createMeshArguments()
+{
+  Quantity *TINQuantity = Quantity::unitLessValues("TINValuesQuantity",QVariant::Double,this);
+
+  m_TINMeshArgument = new TINArgumentDouble("TINMesh", HydroCouple::Spatial::Centroid,
+                                            m_patchDimension,m_edgeDimension,m_nodeDimension,TINQuantity,this);
+
+  m_TINMeshArgument->setCaption("Computational TIN Mesh");
+  m_TINMeshArgument->setDescription("<h1>Computational TIN Mesh</h1>"
+                                    "</hr>"
+                                    "<p>"
+                                    "The Triangular Irregular Network (TIN) mesh used for the computations"
+                                    "</p>");
+
+  addArgument(m_TINMeshArgument);
+}
+
+void FVHMComponent::createTimeArguments()
+{
+  QStringList identifiers;
+  identifiers.append("StartDateTime");
+  identifiers.append("EndDateTime");
+
+  Quantity* quantity = Quantity::unitLessValues("DateTimeQuantity", QVariant::DateTime , this);
+
+  m_simulationDurationArgument = new IdBasedArgumentDateTime("SimulationDuration",identifiers,m_idDimension,quantity,this);
+  m_simulationDurationArgument->setCaption("Simulation Duration");
+  m_simulationDurationArgument->setMatchIdentifiersWhenReading(true);
+
+  QDate date = QDate::currentDate();
+
+  (*m_simulationDurationArgument)["StartDateTime"] = QDateTime(date);
+  (*m_simulationDurationArgument)["EndDateTime"] = QDateTime(date.addDays(1));
+
+  m_simulationDurationArgument->setDescription("<h1>Simulation Duration</h1>"
+                                               "<hr>"
+                                               "<p>"
+                                               "The start and end times for the current simulation."
+                                               "</p>");
+
+  addArgument(m_simulationDurationArgument);
+
+  QStringList timeStepIdentifiers;
+  timeStepIdentifiers.append("Time Step Mode");
+  timeStepIdentifiers.append("Min Time Step");
+  timeStepIdentifiers.append("Max Time Step");
+  timeStepIdentifiers.append("Max Time Step Change Factor");
+  timeStepIdentifiers.append("Max Courant Number");
+  timeStepIdentifiers.append("RMS Courant Number");
+  timeStepIdentifiers.append("Time Step Relaxation Factor");
+  timeStepIdentifiers.append("Output Time Step");
+  timeStepIdentifiers.append("Number of Fixed Time Steps");
+
+  Quantity* timeStepQuantity = Quantity::unitLessValues("TimeStepQuantity", QVariant::Double , this);
+  m_timeStepArguments = new IdBasedArgumentDouble("TimeStepOptions",timeStepIdentifiers, m_idDimension, timeStepQuantity , this);
+  m_timeStepArguments->setCaption("Time Step Options");
+  m_timeStepArguments->setMatchIdentifiersWhenReading(true);
+
+  (*m_timeStepArguments)["Time Step Mode"] = m_useAdaptiveTimeStep ? (m_adaptiveTSMode == MaxCourantNumber ? 1 : 2) : 0;
+  (*m_timeStepArguments)["Min Time Step"] = m_minTimeStep;
+  (*m_timeStepArguments)["Max Time Step"] = m_maxTimeStep;
+  (*m_timeStepArguments)["Max Time Step Change Factor"] = m_maxTimeStepCF;
+  (*m_timeStepArguments)["Max Courant Number"] = m_maxCourantNumber;
+  (*m_timeStepArguments)["RMS Courant Number"] = m_RMSCourantNumber;
+  (*m_timeStepArguments)["Time Step Relaxation Factor"] = m_timeStepRelaxFactor;
+  (*m_timeStepArguments)["Output Time Step"] = m_outputTimeStep;
+  (*m_timeStepArguments)["Number of Fixed Time Steps"] = m_numFixedTimeSteps;
+
+
+  QString description = "<div>"
+                        "<h1>Time Step Options</h1>"
+                        "<hr>"
+                        "<h2>Time Step Mode</h2>"
+                        "<p>"
+                        "<dl>"
+                        "<dt>0</dt>"
+                        "<dd><p>Constant time step</p></dd>"
+                        "<dt>1</dt>"
+                        "<dd><p>Adaptive time step using maximum courant number for all cells. If time step "
+                        "calculated is less than specified time step, the specified time step is used</p></dd>"
+                        "<dt>2</dt>"
+                        "<dd><p>Adaptive time step using root mean square of the courant number for all cells. If time step "
+                        "calculated is less than specified time step, the specified time step is used</p></dd>"
+                        "</dl>"
+                        "</p>"
+                        "<h1>Time Step</h1>"
+                        "<hr>"
+                        "<p>Time step specified in seconds</p>"
+                        "<h1>Time Step Relaxation Factor</h1>"
+                        "<hr>"
+                        "<p>Time step relaxation factor for adaptive time-step</p>"
+                        "<h1>Output Time Step</h1>"
+                        "<hr>"
+                        "<p>Output Time step specified in minutes</p>"
+                        "</div>";
+
+  m_timeStepArguments->setDescription(description);
+  addArgument(m_timeStepArguments);
+}
+
+void FVHMComponent::createInputFilesArguments()
+{
+  Quantity* quantity = Quantity::unitLessValues("OutputFileQuality", QVariant::String , this);
+  quantity->setDefaultValue(QString(""));
+  quantity->setMissingValue(QString(""));
+
+  QStringList options;
+  options << "Restart File";
+
+  m_inputFiles = new IdBasedArgumentString("Input Files", options, m_idDimension, quantity, this);
+  m_inputFiles->setCaption("Input Files");
+  m_inputFiles->setMatchIdentifiersWhenReading(true);
+  addArgument(m_inputFiles);
+}
+
+void FVHMComponent::createOutputFilesArguments()
+{
+  Quantity* quantity = Quantity::unitLessValues("OutputFileQuality", QVariant::String , this);
+  quantity->setDefaultValue(QString(""));
+  quantity->setMissingValue(QString(""));
+
+  QStringList options;
+  options << "Output NetCDF File";
+  options << "Output Shapefile";
+  options << "Output Edge Fluxes File";
+  options << "WriteActiveCellsOnly";
+  options << "Log File";
+
+  m_outputFilesArgument = new IdBasedArgumentString("Output Options", options, m_idDimension,quantity,this);
+  m_outputFilesArgument->setCaption("Output Options");
+  m_outputFilesArgument->setMatchIdentifiersWhenReading(true);
+
+  addArgument(m_outputFilesArgument);
+}
+
+void FVHMComponent::createEdgeFluxesIOArguments()
+{
+  Quantity* quantity = Quantity::flowInCMS(this);
+  quantity->setCaption("Outflow (cms)");
+  quantity->setMissingValue(QString(""));
+  quantity->setDefaultValue(QString(""));
+
+  m_edgeFluxesIO = new EdgeFluxesIO("Output Edge Fluxes",
+                                    m_geometryDimension,
+                                    quantity,this);
+
+  m_edgeFluxesIO->setCaption("Output Edge Fluxes");
+  m_edgeFluxesIO->setIsOptional(true);
+  addArgument(m_edgeFluxesIO);
+}
+
+void FVHMComponent::createConvergenceArguments()
+{
+  QStringList identifiers;
+  identifiers.append("Pressure Rel. Norm Criteria");
+  identifiers.append("Continuity Rel. Norm Criteria");
+  identifiers.append("X-Velocity Rel. Norm Criteria");
+  identifiers.append("Y-Velocity Rel. Norm Criteria");
+
+  Quantity* quantity = Quantity::unitLessValues("ConvergenceQuantity", QVariant::Double , this);
+  quantity->setMissingValue(-99999999);
+
+  m_convergenceArguments = new IdBasedArgumentDouble("Convergence Options",identifiers,m_idDimension,quantity,this);
+  m_convergenceArguments->setCaption("Convergence Options");
+  m_convergenceArguments->setMatchIdentifiersWhenReading(true);
+
+
+
+  (*m_convergenceArguments)["Pressure Rel. Norm Criteria"] = m_pressureConvergenceTol;
+  (*m_convergenceArguments)["Continuity Rel. Norm Criteria"] = m_contConvergenceTol;
+  (*m_convergenceArguments)["X-Velocity Rel. Norm Criteria"] = m_uvelConvergenceTol;
+  (*m_convergenceArguments)["Y-Velocity Rel. Norm Criteria"] = m_vvelConvergenceTol;
+
+  m_convergenceArguments->setDescription("<h1>Convergence Options</h1>"
+                                         "<hr>"
+                                         "<p>"
+                                         "Convergence relative residual norm criteria  for convergence."
+                                         "</p>");
+
+  addArgument(m_convergenceArguments);
+}
+
+void FVHMComponent::createSolverOptionsArguments()
+{
+  Dimension *solverOptionsDimension = new Dimension("SolverOptionDimension","Dimension for solver option identifiers", this);
+  QStringList identifiers;
+  identifiers.append("Solver Type");
+  identifiers.append("Solver Max No. Iterations");
+  identifiers.append("AMG Max No.Iterations");
+  identifiers.append("Convergence Criteria");
+
+  Quantity* quantity = Quantity::unitLessValues("ConvergenceQuantity", QVariant::Double , this);
+
+  m_solverOptionsArguments = new IdBasedArgumentDouble("Solver Options",identifiers,solverOptionsDimension,quantity,this);
+  m_solverOptionsArguments->setCaption("Solver Options");
+  m_solverOptionsArguments->setMatchIdentifiersWhenReading(true);
+
+  (*m_solverOptionsArguments)["Solver Type"] = m_solverType;
+  (*m_solverOptionsArguments)["Solver Max No. Iterations"] = m_solverMaximumNumberOfIterations;
+  (*m_solverOptionsArguments)["AMG Max No.Iterations"] = m_solverAMGPreconditionerNumberOfIterations;
+  (*m_solverOptionsArguments)["Convergence Criteria"] = m_solverConvergenceTol;
+
+  addArgument(m_solverOptionsArguments);
+}
+
+void FVHMComponent::createPressureVelCouplingArguments()
+{
+  QStringList identifiers;
+  identifiers.append("Coupling Type");
+  identifiers.append("Iterations per TimeStep");
+  identifiers.append("Pressure Relaxation Factor");
+  identifiers.append("Velocity Relaxation Factor");
+
+  Quantity* quantity = Quantity::unitLessValues("PressureVelocityCoupleQuantity", QVariant::Double , this);
+  quantity->setMissingValue(-99999999);
+
+  m_pressureVelCouplingArguments = new IdBasedArgumentDouble("Pressure-Velocity Coupling Options",
+                                                             identifiers,m_idDimension,quantity,this);
+  m_pressureVelCouplingArguments->setCaption("Pressure-Velocity Coupling Options");
+  m_pressureVelCouplingArguments->setMatchIdentifiersWhenReading(true);
+
+  (*m_pressureVelCouplingArguments)["Coupling Type"] = m_pressureVelocityCouplingType;
+  (*m_pressureVelCouplingArguments)["Iterations per TimeStep"] = m_itersPerTimeStep;
+  (*m_pressureVelCouplingArguments)["Pressure Relaxation Factor"] = m_pressureRelaxFactor;
+  (*m_pressureVelCouplingArguments)["Velocity Relaxation Factor"] = m_velocityRelaxFactor;
+
+  addArgument(m_pressureVelCouplingArguments);
+}
+
+void FVHMComponent::createWettingAndDryingArguments()
+{
+  QStringList identifiers;
+  identifiers.append("Wet Cell Depth");
+  identifiers.append("Wet Cell Node Depth");
+  identifiers.append("Minimum Viscous Sublayer Depth");
+
+  Quantity* quantity = Quantity::lengthInMeters(this);
+  quantity->setCaption("Wetting and Drying Depths (m)");
+  quantity->setMissingValue(-99999999);
+
+  m_wettingAndDryingArgument = new IdBasedArgumentDouble("Wetting and Drying Parameters",identifiers,m_idDimension,quantity,this);
+  m_wettingAndDryingArgument->setCaption("Wetting and Drying Parameters");
+  m_wettingAndDryingArgument->setMatchIdentifiersWhenReading(true);
+
+
+  (*m_wettingAndDryingArgument)["Wet Cell Depth"] = m_wetCellDepth;
+  (*m_wettingAndDryingArgument)["Wet Cell Node Depth"] = m_wetCellNodeDepth;
+  (*m_wettingAndDryingArgument)["Minimum Viscous Sublayer Depth"] = m_viscousSubLayerDepth;
+
+  addArgument(m_wettingAndDryingArgument);
+}
+
+void FVHMComponent::createInitialUniformBCArguments()
+{
+  QStringList identifiers;
+
+  identifiers.append("Uniform WSE");
+  identifiers.append("Uniform Depth");
+  identifiers.append("Uniform U-Velocity");
+  identifiers.append("Uniform V-Velocity");
+  identifiers.append("Uniform Mannings");
+  identifiers.append("Viscosity");
+  identifiers.append("Min Outlet WSE Slope");
+  identifiers.append("Inlet WSEBC Vel Relaxation Factor");
+  identifiers.append("Outlet WSEBC Vel Relaxation Factor");
+  identifiers.append("Restart File");
+
+  Quantity* quantity = Quantity::unitLessValues("Initial Model Variables",QVariant::Double, this);
+  quantity->setDefaultValue(0.0);
+  quantity->setMissingValue(-99999999);
+
+  m_initialParamArguments = new IdBasedArgumentDouble("Initial Model Variables",identifiers,m_idDimension,quantity,this);
+  m_initialParamArguments->setCaption("Initial Model Variables");
+  m_initialParamArguments->setMatchIdentifiersWhenReading(true);
+
+  (*m_initialParamArguments)["Uniform WSE"] = m_uniWSE;
+  (*m_initialParamArguments)["Uniform Depth"] = m_uniDepth;
+  (*m_initialParamArguments)["Uniform U-Velocity"] = m_uniUVel;
+  (*m_initialParamArguments)["Uniform V-Velocity"] = m_uniVVel;
+  (*m_initialParamArguments)["Uniform Mannings"] = m_uniMannings;
+  (*m_initialParamArguments)["Viscosity"] = m_viscosity;
+  (*m_initialParamArguments)["Min Outlet WSE Slope"] = m_inletOutletWSESlope;
+  (*m_initialParamArguments)["Inlet WSEBC Vel Relaxation Factor"] = m_inletWSEBCVRelFactor;
+  (*m_initialParamArguments)["Outlet WSEBC Vel Relaxation Factor"] = m_outletWSEBCVRelFactor;
+
+  addArgument(m_initialParamArguments);
+}
+
+void FVHMComponent::createInletOutletFlowBCArguments()
+{
+
+  Quantity* quantity = Quantity::flowInCMS(this);
+  quantity->setMissingValue(-99999999);
+
+  m_inletFlowBCArgument = new InletFlowBCArgument("Inlet Flow BC", m_timeDimension,
+                                                  m_geometryDimension,quantity,this);
+  m_inletFlowBCArgument->setCaption("Inlet Flow BC");
+  m_inletFlowBCArgument->setIsOptional(true);
+
+  addArgument(m_inletFlowBCArgument);
+
+
+  m_outletFlowBCArgument = new OutletFlowBCArgument("Outlet Flow BC", m_timeDimension,
+                                                    m_geometryDimension,quantity,this);
+  m_outletFlowBCArgument->setCaption("Outlet Flow BC");
+  m_outletFlowBCArgument->setIsOptional(true);
+
+  addArgument(m_outletFlowBCArgument);
+}
+
+void FVHMComponent::createSourceSinkFlowsBCArguments()
+{
+
+  Quantity* quantity = Quantity::flowInCMS(this);
+  quantity->setMissingValue(-99999999);
+
+  m_sourceSinkFlowBCArgument = new TimeGeometryArgumentDouble("Sources & Sinks Flow BC",
+                                                              IGeometry::Polygon,
+                                                              m_timeDimension,
+                                                              m_geometryDimension, quantity,this);
+  m_sourceSinkFlowBCArgument->setCaption("Sources and Sinks Flow BC");
+  m_sourceSinkFlowBCArgument->setIsOptional(true);
+
+  addArgument(m_sourceSinkFlowBCArgument);
+}
+
+void FVHMComponent::createWSEBCArguments()
+{
+  Quantity* quantity = Quantity::lengthInMeters(this);
+  quantity->setCaption("Water Surface Elevation (m)");
+  quantity->setMissingValue(-99999999);
+
+  m_outletWSEBC = new WSEBC("Outlet WSE BC", WSEBC::Outlet,
+                            m_outletWSEBCVRelFactor,
+                            m_timeDimension,
+                            m_geometryDimension,quantity,this);
+
+  m_outletWSEBC->setCaption("Outlet Water Surface Elevation BC");
+  m_outletWSEBC->setIsOptional(true);
+
+
+  m_inletWSEBC = new WSEBC("Inlet WSE BC",
+                           WSEBC::Inlet,
+                           m_inletWSEBCVRelFactor,
+                           m_timeDimension,
+                           m_geometryDimension,quantity,this);
+
+  m_inletWSEBC->setCaption("Inlet Water Surface Elevation BC");
+  m_inletWSEBC->setIsOptional(true);
+
+  addArgument(m_outletWSEBC);
+  addArgument(m_inletWSEBC);
+}
+
+void FVHMComponent::createCriticalDepthOutflowBCArguments()
+{
+  Quantity* quantity = Quantity::lengthInMeters(this);
+  quantity->setCaption("Critical Depth (m)");
+  quantity->setMissingValue(-99999999);
+
+  m_criticalDepthOutflowBC = new CriticalDepthOutflowBC("Critical Depth Outflow BC",
+                                                        m_geometryDimension,
+                                                        quantity,this);
+
+  m_criticalDepthOutflowBC->setCaption("Critical Depth Outflow BC");
+  m_criticalDepthOutflowBC->setIsOptional(true);
+  addArgument(m_criticalDepthOutflowBC);
+}
+
+void FVHMComponent::createInitialWSEBCArguments()
+{
+  //  Quantity* quantity = Quantity::lengthInMeters(this);
+  //  quantity->setCaption("Water Surface Elevation (m)");
+  //  quantity->setMissingValue(-99999999);
+
+  m_initialWSEBC = new InitialWSEBC("Initial WSE BC",this);
+  m_initialWSEBC->setCaption("Initial Water Surface Elevation BC");
+  ValueDefinition *quantity = dynamic_cast<ValueDefinition*>(m_initialWSEBC->valueDefinition());
+  quantity->setCaption("Water Surface Elevation (m)");
+  quantity->setMissingValue(-99999999);
+
+  addArgument(m_initialWSEBC);
+}
+
+void FVHMComponent::createWSESlopeArguments()
+{
+  Quantity* quantity = Quantity::lengthInMeters(this);
+  quantity->setCaption("Water Surface Elevation (m)");
+  quantity->setMissingValue(-99999999);
+
+  m_outletWSESlope = new OutletWSESlope("Outlet WSE Slope BC",
+                                        m_geometryDimension,
+                                        quantity,this);
+
+  m_outletWSESlope->setCaption("Outlet Water Surface Elevation Slope BC");
+  m_outletWSESlope->setIsOptional(true);
+  addArgument(m_outletWSESlope);
+}
+
+void FVHMComponent::createPrecipitationArguments()
+{
+
+  //fix
+  Quantity* quantity = Quantity::lengthInMeters(this);
+  quantity->setCaption("Rainfall Rate (mm/hr)");
+  quantity->setMissingValue(-99999999);
+
+  m_precipitationArgument = new PrecipBC("Precipitation Rate BC", m_timeDimension,m_geometryDimension, quantity,this);
+  m_precipitationArgument->setCaption("Precipitation Rate BC");
+  m_precipitationArgument->setDescription("Rainfall Rate (mm/hr)");
+  m_precipitationArgument->setIsOptional(true);
+
+  addArgument(m_precipitationArgument);
+}
+
+void FVHMComponent::createAdvectionDiffusionSchemeArguments()
+{
+  QStringList identifiers;
+  identifiers.append("Use Turbulence");
+  identifiers.append("Turbulence Scheme");
+  identifiers.append("Smagorinsky-Lilly Coefficient");
+  identifiers.append("Parabolic Eddy Viscosity Constant");
+  identifiers.append("Advection Scheme");
+
+  Quantity* quantity = Quantity::unitLessValues("Indexes for Advec/Diffusion Modes", QVariant::Double, this);
+
+
+  m_advectionDiffusionSchemeArgument = new IdBasedArgumentDouble("Advection Diffusion Scheme Options",identifiers,m_idDimension,quantity,this);
+  m_advectionDiffusionSchemeArgument->setCaption("Advection Diffusion Scheme Options");
+  m_advectionDiffusionSchemeArgument->setMatchIdentifiersWhenReading(true);
+
+
+  (*m_advectionDiffusionSchemeArgument)["Use Turbulence"] = m_useEddyViscosity ? 1.0 : 0.0 ;
+  (*m_advectionDiffusionSchemeArgument)["Turbulence Scheme"] = m_turbulenceScheme;
+  (*m_advectionDiffusionSchemeArgument)["Smagorinsky-Lilly Coefficient"] = m_smargorinskyCoefficient;
+  (*m_advectionDiffusionSchemeArgument)["Parabolic Eddy Viscosity Constant"] = m_parabolicEddyViscosityConstant;
+  (*m_advectionDiffusionSchemeArgument)["Advection Scheme"] = m_advectionScheme;
+
+  addArgument(m_advectionDiffusionSchemeArgument);
+}
+
+void FVHMComponent::createMiscOptionsArguments()
+{
+  QStringList identifiers;
+
+  identifiers.append("Verbose");
+  identifiers.append("Print Frequency");
+  identifiers.append("Output Write Flush Frequency");
+  identifiers.append("Gradient Calculation Mode");
+
+  Quantity* quantity = Quantity::unitLessValues("Misc Options Values", QVariant::Double, this);
+  quantity->setDefaultValue(0.0);
+  quantity->setMissingValue(-99999999);
+
+  m_miscOptionsArgument = new IdBasedArgumentDouble("Misc Options Argument",identifiers,m_idDimension,quantity,this);
+  m_miscOptionsArgument->setCaption("Misc Options");
+  m_miscOptionsArgument->setMatchIdentifiersWhenReading(true);
+
+  (*m_miscOptionsArgument)["Verbose"] = m_verbose ? 1.0 : 0.0;
+  (*m_miscOptionsArgument)["Print Frequency"] = m_printFrequency;
+  (*m_miscOptionsArgument)["Output Write Flush Frequency"] = m_writeFrequency;
+  (*m_miscOptionsArgument)["Gradient Calculation Mode"] = TriCV::gradientCalcMode;
+
+  addArgument(m_miscOptionsArgument);
+}
+
+bool FVHMComponent::initializeArguments(QString &message)
+{
+  bool initialized = initializeWettingAndDryingArguments(message) &&
+                     initializeMeshArguments(message) &&
+                     initializeInitialUniformBCArguments(message) &&
+                     initializeTimeArguments(message) &&
+                     initializeOutputFilesArguments(message) &&
+                     initializeEdgeFluxesIOArguments(message) &&
+                     initializeConvergenceArguments(message) &&
+                     initializeSolverOptionsArguments(message) &&
+                     initializePressureVelCouplingArguments(message) &&
+                     initializeInletOutletFlowBCArguments(message) &&
+                     initializeSourceSinkFlowsBCArguments(message) &&
+                     initializeWSEBCArguments(message) &&
+                     initializeCriticalDepthOutflowBCArguments(message) &&
+                     initializeInitialWSEBCArguments(message) &&
+                     initializeWSESlopeBCArguments(message) &&
+                     initializePrecipitationArguments(message) &&
+                     initializeAdvectionDiffusionSchemeArguments(message) &&
+                     initializeMiscOptionsArguments(message);
+
+  return initialized;
+}
+
+bool FVHMComponent::initializeMeshArguments(QString &message)
+{
+  deleteControlVolumes();
+
+  m_sharedTriangles.clear();
+
+
+  if(m_TINMeshArgument->TINInternal() != nullptr)
+  {
+    if((m_numCells = m_TINMeshArgument->TINInternal()->patchCount()))
+    {
+      m_controlVolumes = std::vector<TriCV*>(m_numCells);
+
+      for(int i = 0; i < m_numCells ; i++)
+      {
+        HCTriangle *triangle = m_TINMeshArgument->TINInternal()->triangleInternal(i);
+        triangle->setIndex(i);
+
+        TriCV *cv = new TriCV(triangle, this);
+
+        cv->index = i;
+        cv->wetIndex = 1;
+        cv->wetCellIndex = i;
+
+        m_controlVolumes[i] = cv;
+
+        m_sharedTriangles.append(QSharedPointer<HCGeometry>(triangle, deleteLater));
+      }
+
+#ifdef USE_OPENMP
+#pragma omp parallel for
+#endif
+      for(int i = 0 ; i < m_numCells ; i++)
+      {
+        m_controlVolumes[i]->calculateAdjacentCellParams();
+      }
+
+      resetOctree();
+      return true;
+    }
+  }
+
+  m_numCells = 0;
+  message = "Mesh has not been set or does not have any elements";
+  resetOctree();
+  return false;
+
+}
+
+bool FVHMComponent::initializeTimeArguments(QString &message)
+{
+  QDateTime startDateTime = (*m_simulationDurationArgument)["StartDateTime"];
+  QDateTime endDateTime = (*m_simulationDurationArgument)["EndDateTime"];
+
+  if(startDateTime >= endDateTime)
+  {
+    message =  "Start datetime must be earlier than end time";
+    return false;
+  }
+  else
+  {
+    m_startDateTime =  SDKTemporal::DateTime::toModifiedJulianDays(startDateTime);
+    m_endDateTime = SDKTemporal::DateTime::toModifiedJulianDays(endDateTime);
+    m_currentDateTime = m_startDateTime;
+    progressChecker()->reset(m_startDateTime, m_endDateTime);
+  }
+
+  m_minTimeStep = (*m_timeStepArguments)["Min Time Step"];
+  m_maxTimeStep = (*m_timeStepArguments)["Max Time Step"];
+
+  if(m_startDateTime + (m_minTimeStep/(60*60*24)) > m_endDateTime)
+  {
+    message = "Time step must be less than specified simulation duration interval";
+    return false;
+  }
+
+  m_maxTimeStepCF = (*m_timeStepArguments)["Max Time Step Change Factor"];
+
+  if(m_maxTimeStepCF < 0)
+    m_maxTimeStepCF = 0.05;
+
+  m_outputTimeStep = (*m_timeStepArguments)["Output Time Step"];
+  m_previouslyWrittenDateTime = m_currentDateTime;
+  m_nextOutputTime = m_currentDateTime;
+  m_qtDateTime = SDKTemporal::DateTime(m_currentDateTime).dateTime();
+
+  if(m_currentDateTime + (m_outputTimeStep / 1440.00) > m_endDateTime)
+  {
+    message = "Output time step must be less than specified simulation duration interval";
+    return false;
+  }
+
+  int timeStepMode = (*m_timeStepArguments)["Time Step Mode"];
+
+  m_numFixedTimeSteps = (*m_timeStepArguments)["Number of Fixed Time Steps"];
+
+  if(m_numFixedTimeSteps < 2)
+    m_numFixedTimeSteps = 2;
+
+  switch (timeStepMode)
+  {
+
+    case 1:
+      {
+        m_useAdaptiveTimeStep = true;
+        m_adaptiveTSMode = AdaptiveTSMode::MaxCourantNumber;
+        m_maxCourantNumber = (*m_timeStepArguments)["Max Courant Number"];
+      }
+      break;
+    case 2:
+      {
+        m_useAdaptiveTimeStep = true;
+        m_adaptiveTSMode = AdaptiveTSMode::RMSCourantNumber;
+        m_RMSCourantNumber = (*m_timeStepArguments)["RMS Courant Number"];
+      }
+      break;
+    default:
+      {
+        m_useAdaptiveTimeStep = false;
+      }
+      break;
+  }
+
+  return true;
+}
+
+bool FVHMComponent::initializeConvergenceArguments(QString &message)
+{
+  message += "";
+
+  m_pressureConvergenceTol = (*m_convergenceArguments)["Pressure Rel. Norm Criteria"];
+  m_contConvergenceTol = (*m_convergenceArguments)["Continuity Rel. Norm Criteria"];
+  m_uvelConvergenceTol = (*m_convergenceArguments)["X-Velocity Rel. Norm Criteria"];
+  m_vvelConvergenceTol = (*m_convergenceArguments)["Y-Velocity Rel. Norm Criteria"];
+
+  return true;
+}
+
+bool FVHMComponent::initializeSolverOptionsArguments(QString &message)
+{
+  message += "";
+
+  m_solverType = (*m_solverOptionsArguments)["Solver Type"];
+  m_solverMaximumNumberOfIterations = (*m_solverOptionsArguments)["Solver Max No. Iterations"];
+  m_solverAMGPreconditionerNumberOfIterations = (*m_solverOptionsArguments)["AMG Max No.Iterations"];
+  m_solverConvergenceTol = (*m_solverOptionsArguments)["Convergence Criteria"];
+
+  return true;
+}
+
+bool FVHMComponent::initializePressureVelCouplingArguments(QString &message)
+{
+  message += "";
+
+  // m_solverType = (*m_pressureVelCouplingArguments)["Coupling Type"];
+  m_itersPerTimeStep = (*m_pressureVelCouplingArguments)["Iterations per TimeStep"];
+
+  if(m_itersPerTimeStep < 1)
+  {
+    message = "Number of iterations for the pressure velocity coupling must be greater than 0";
+    return false;
+  }
+
+  m_pressureVelocityCouplingType = (*m_pressureVelCouplingArguments)["Coupling Type"];
+
+  m_pressureRelaxFactor = (*m_pressureVelCouplingArguments)["Pressure Relaxation Factor"];
+
+  if(m_pressureRelaxFactor <= 0 || m_pressureRelaxFactor > 1)
+  {
+    message = "Pressure relaxation factor must be greater than 0 and less than or equal to 1";
+    return false;
+  }
+
+  m_velocityRelaxFactor = (*m_pressureVelCouplingArguments)["Velocity Relaxation Factor"];
+
+  if(m_velocityRelaxFactor <= 0 || m_velocityRelaxFactor > 1)
+  {
+    message = "Velocity relaxation factor must be greater than 0 and less than or equal to 1";
+    return false;
+  }
+
+  return true;
+}
+
+bool FVHMComponent::initializeInletOutletFlowBCArguments(QString &message)
+{
+  message = "";
+
+  m_inletFlowBCArgument->clear();
+  m_inletFlowBCArgument->findAssociatedCVGeometries();
+  m_inletFlowBCArgument->prepare();
+
+  m_outletFlowBCArgument->clear();
+  m_outletFlowBCArgument->findAssociatedCVGeometries();
+  m_outletFlowBCArgument->prepare();
+
+  return true;
+}
+
+bool FVHMComponent::initializeSourceSinkFlowsBCArguments(QString &message)
+{
+  message = "";
+  return true;
+}
+
+bool FVHMComponent::initializeWSEBCArguments(QString &message)
+{
+  message = "";
+
+  m_outletWSEBC->setVelocityRelaxationFactor(m_outletWSEBCVRelFactor);
+  m_outletWSEBC->clear();
+  m_outletWSEBC->findAssociatedCVGeometries();
+  m_outletWSEBC->prepare();
+
+  m_inletWSEBC->setVelocityRelaxationFactor(m_inletWSEBCVRelFactor);
+  m_inletWSEBC->clear();
+  m_inletWSEBC->findAssociatedCVGeometries();
+  m_inletWSEBC->prepare();
+
+  return true;
+}
+
+bool FVHMComponent::initializeCriticalDepthOutflowBCArguments(QString &message)
+{
+  message = "";
+  m_criticalDepthOutflowBC->clear();
+  m_criticalDepthOutflowBC->findAssociatedCVGeometries();
+  m_criticalDepthOutflowBC->prepare();
+
+  return true;
+}
+
+bool FVHMComponent::initializeInitialWSEBCArguments(QString &message)
+{
+  message = "";
+
+  m_initialWSEBC->clear();
+  m_initialWSEBC->findAssociatedCVGeometries();
+  m_initialWSEBC->prepare();
+
+  return true;
+}
+
+bool FVHMComponent::initializeWSESlopeBCArguments(QString &message)
+{
+  message = "";
+  //  m_outletWSESlope->setVelocityRelaxationFactor(m_outletWSEBCVRelFactor);
+  m_outletWSESlope->clear();
+  m_outletWSESlope->findAssociatedCVGeometries();
+  m_outletWSESlope->prepare();
+
+  return true;
+}
+
+bool FVHMComponent::initializePrecipitationArguments(QString &message)
+{
+  message = "";
+  m_precipitationArgument->clear();
+  m_precipitationArgument->findAssociatedCVGeometries();
+  m_precipitationArgument->prepare();
+  return true;
+}
+
+bool FVHMComponent::initializeInitialUniformBCArguments(QString &message)
+{
+  message = "";
+
+  m_uniDepth=(*m_initialParamArguments)["Uniform Depth"];
+  m_uniUVel = (*m_initialParamArguments)["Uniform U-Velocity"];
+  m_uniVVel = (*m_initialParamArguments)["Uniform V-Velocity"];
+  m_uniMannings  = (*m_initialParamArguments)["Uniform Mannings"];
+  m_viscosity = (*m_initialParamArguments)["Viscosity"];
+  m_inletOutletWSESlope = (*m_initialParamArguments)["Min Outlet WSE Slope"];
+  m_uniWSE = (*m_initialParamArguments)["Uniform WSE"];
+  m_inletWSEBCVRelFactor = (*m_initialParamArguments)["Inlet WSEBC Vel Relaxation Factor"];
+  m_outletWSEBCVRelFactor = (*m_initialParamArguments)["Outlet WSEBC Vel Relaxation Factor"];
+
+  double missingData =  dynamic_cast<HydroCouple::IQuantity*>(m_initialParamArguments->valueDefinition())->missingValue().toDouble();
+
+  if(m_uniWSE != missingData)
+  {
+#ifdef USE_OPENMP
+#pragma omp parallel for
+#endif
+    for(int i = 0; i < m_numCells ; i++)
+    {
+      TriCV *cv = m_controlVolumes[i];
+      cv->maxH = std::numeric_limits<double>::lowest();
+      cv->maxZ = cv->maxH;
+      cv->maxVel[0] = cv->maxH;
+      cv->maxVel[1] = cv->maxH;
+      cv->setVFRWSE(m_uniWSE,true);
+      cv->setVFRWSE(m_uniWSE);
+    }
+  }
+
+  if(m_uniDepth != missingData)
+  {
+#ifdef USE_OPENMP
+#pragma omp parallel for
+#endif
+    for(int i = 0; i < m_numCells ; i++)
+    {
+      TriCV *cv = m_controlVolumes[i];
+      cv->setVFRWSE(cv->cz + m_uniDepth,true);
+      cv->setVFRWSE(cv->cz + m_uniDepth);
+
+      //      cv->setVFRDepth(m_uniDepth,true);
+      //      cv->setVFRDepth(m_uniDepth);
+    }
+  }
+
+  if(m_uniUVel != missingData)
+  {
+
+#ifdef USE_OPENMP
+#pragma omp parallel for
+#endif
+    for(int i = 0; i < m_numCells ; i++)
+    {
+      TriCV *cv = m_controlVolumes[i];
+      cv->prevVel[0].value = m_uniUVel;
+      cv->vel[0].value = m_uniUVel;
+      cv->prevIterVel[0] = m_uniUVel;
+    }
+  }
+
+  if(m_uniVVel != missingData)
+  {
+
+#ifdef USE_OPENMP
+#pragma omp parallel for
+#endif
+    for(size_t i = 0; i < m_controlVolumes.size() ; i++)
+    {
+      TriCV *cv = m_controlVolumes[i];
+      cv->prevVel[1].value = m_uniVVel;
+      cv->vel[1].value = m_uniVVel;
+      cv->prevIterVel[1] = m_uniVVel;
+    }
+  }
+
+  if(m_uniMannings != missingData)
+  {
+
+#ifdef USE_OPENMP
+#pragma omp parallel for
+#endif
+    for(size_t i = 0; i < m_controlVolumes.size() ; i++)
+    {
+      TriCV *cv = m_controlVolumes[i];
+      cv->mannings = m_uniMannings;
+    }
+  }
+
+  return true;
+}
+
+bool FVHMComponent::initializeWettingAndDryingArguments(QString &message)
+{
+  message = "";
+
+  m_wetCellDepth = (*m_wettingAndDryingArgument)["Wet Cell Depth"];
+  m_wetCellNodeDepth = (*m_wettingAndDryingArgument)["Wet Cell Node Depth"];
+  m_viscousSubLayerDepth = (*m_wettingAndDryingArgument)["Minimum Viscous Sublayer Depth"];
+
+  return true;
+}
+
+bool FVHMComponent::initializeAdvectionDiffusionSchemeArguments(QString &message)
+{
+  message = "";
+
+  //Use switch later for differen turbulence options
+  m_useEddyViscosity = (*m_advectionDiffusionSchemeArgument)["Use Turbulence"] ? 1.0 : 0.0;
+  m_turbulenceScheme = (*m_advectionDiffusionSchemeArgument)["Turbulence Scheme"];
+  m_smargorinskyCoefficient = (*m_advectionDiffusionSchemeArgument)["Smagorinsky-Lilly Coefficient"];
+  m_parabolicEddyViscosityConstant = (*m_advectionDiffusionSchemeArgument)["Parabolic Eddy Viscosity Constant"];
+  m_advectionScheme =  (*m_advectionDiffusionSchemeArgument)["Advection Scheme"];
+
+  return true;
+}
+
+bool FVHMComponent::initializeMiscOptionsArguments(QString &message)
+{
+  message = "";
+
+  m_verbose = (*m_miscOptionsArgument)["Verbose"] ? true : false;
+  m_printFrequency = (*m_miscOptionsArgument)["Print Frequency"];
+
+  if(m_printFrequency < 1)
+  {
+    m_printFrequency = 1;
+  }
+
+  m_writeFrequency = (*m_miscOptionsArgument)["Output Write Flush Frequency"];
+
+  if(m_writeFrequency < 1)
+  {
+    m_writeFrequency = 1;
+  }
+
+  if(m_miscOptionsArgument->containsIdentifier("Gradient Calculation Mode"))
+  {
+    TriCV::gradientCalcMode = (*m_miscOptionsArgument)["Gradient Calculation Mode"];
+
+    if(TriCV::gradientCalcMode < 0 )
+    {
+      TriCV::gradientCalcMode = 0;
+    }
+  }
+
+
+
+
+  return true;
+}
+
+void FVHMComponent::createAdaptedOutputFactories()
+{
+  TemporalInterpolationFactory* tempInterpFactory = new TemporalInterpolationFactory("TimeInterpolationFactory",this);
+  addAdaptedOutputFactory(tempInterpFactory);
+}
+
+void FVHMComponent::createInputs()
+{
+  createInflowInput();
+}
+
+void FVHMComponent::createInflowInput()
+{
+
+  Quantity *flowQuantity = Quantity::flowInCMS(this);
+
+  m_inflowInput = new InflowInput("CVInflows", m_TINMeshArgument->sharedTIN(),
+                                  m_timeDimension, m_patchDimension, m_edgeDimension,
+                                  m_nodeDimension, flowQuantity,this);
+  m_inflowInput->setCaption("Inflows (m^3/s)");
+
+  SDKTemporal::DateTime *dt1 = new SDKTemporal::DateTime(m_startDateTime- 1.0/10000000000.0, m_inflowInput);
+  SDKTemporal::DateTime *dt2 = new SDKTemporal::DateTime(m_startDateTime, m_inflowInput);
+  m_inflowInput->addTime(dt1);
+  m_inflowInput->addTime(dt2);
+
+
+  addInput(m_inflowInput);
+}
+
+void FVHMComponent::createOutputs()
+{
+  createWSEOutput();
+  createDepthOutput();
+  createCVAreaOutput();
+}
+
+void FVHMComponent::createWSEOutput()
+{
+
+  Quantity *wseQuantity = Quantity::lengthInMeters(this);
+  wseQuantity->setCaption("Water Surface Elevation (m)");
+
+  m_WSEOutput = new CVWSEOutput("CVNodeWSE", m_TINMeshArgument->sharedTIN(),
+                                m_timeDimension, m_patchDimension, m_edgeDimension,
+                                m_nodeDimension, wseQuantity,this);
+  m_WSEOutput->setCaption("Water Surface Elevation (m)");
+
+  SDKTemporal::DateTime *dt1 = new SDKTemporal::DateTime(m_startDateTime - 1.0/10000000000.0, m_WSEOutput);
+  SDKTemporal::DateTime *dt2 = new SDKTemporal::DateTime(m_startDateTime, m_WSEOutput);
+  m_WSEOutput->addTime(dt1);
+  m_WSEOutput->addTime(dt2);
+
+  addOutput(m_WSEOutput);
+}
+
+void FVHMComponent::createDepthOutput()
+{
+
+  Quantity *depthQuantity = Quantity::lengthInMeters(this);
+  depthQuantity->setCaption("Water Depth (m)");
+
+  m_depthOutput = new CVDepthOutput("CVWaterDepth", m_TINMeshArgument->sharedTIN(),
+                                    m_timeDimension, m_patchDimension, m_edgeDimension,
+                                    m_nodeDimension, depthQuantity,this);
+  m_depthOutput->setCaption("Water Depth (m)");
+
+  SDKTemporal::DateTime *dt1 = new SDKTemporal::DateTime(m_startDateTime - 1.0/10000000000.0, m_depthOutput);
+  SDKTemporal::DateTime *dt2 = new SDKTemporal::DateTime(m_startDateTime, m_depthOutput);
+  m_depthOutput->addTime(dt1);
+  m_depthOutput->addTime(dt2);
+
+  addOutput(m_depthOutput);
+}
+
+void FVHMComponent::createCVAreaOutput()
+{
+
+  Quantity *areaQuantity = Quantity::areaInSquareMeters(this);
+  m_CVAreasOutput = new GeometryOutputDouble("CVAreas", IGeometry::TriangleZ, m_geometryDimension,
+                                             areaQuantity,this);
+  m_CVAreasOutput->setCaption("Control Volume Areas (m^2)");
+
+
+  if(m_sharedTriangles.length())
+  {
+    m_CVAreasOutput->addGeometries(m_sharedTriangles);
+  }
+
+  for(int i = 0 ; i < m_sharedTriangles.length(); i++)
+  {
+    m_CVAreasOutput->setValue(i, &m_controlVolumes[i]->area);
+  }
+
+  addOutput(m_CVAreasOutput);
+}
+
+bool FVHMComponent::isInfOrNan(double number)
+{
+#ifdef UTAH_CHPC
+  return std::isinf(number) || std::isnan(number);
+#else
+  return isinf(number) || isnan(number);
+#endif
+}
+
+bool FVHMComponent::getBoolFromString(const QString &boolString)
+{
+  bool convertedToInt = false;
+  int value = boolString.toInt(&convertedToInt);
+
+  if(!boolString.trimmed().compare("True", Qt::CaseInsensitive) ||
+     !boolString.trimmed().compare("Yes", Qt::CaseInsensitive) ||
+     !boolString.trimmed().compare("1", Qt::CaseInsensitive) ||
+     (convertedToInt && value)
+     )
+  {
+    return true;
+  }
+
+  return false;
+}
+
+void FVHMComponent::deleteLater(HCGeometry *geometry)
+{
+  geometry->index();
+}
+

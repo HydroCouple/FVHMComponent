@@ -3,12 +3,31 @@
 # Project created by QtCreator 2016-06-06T10:49:44
 #
 #-------------------------------------------------
-
-TEMPLATE = lib
 TARGET = FVHMComponent
 QT       -= gui
 
 DEFINES += FVHMCOMPONENT_LIBRARY
+DEFINES += UTAH_CHPC
+#DEFINES += USE_MPI
+#DEFINES += USE_OPENMP
+DEFINES += USE_SUITESPARSE
+
+CONFIG += c++11
+CONFIG += debug_and_release
+
+contains(DEFINES,FVHMCOMPONENT_LIBRARY){
+
+  TEMPLATE = lib
+  message("Compiling as library")
+
+} else {
+
+  TEMPLATE = app
+  CONFIG-=app_bundle
+  message("Compiling as application")
+
+}
+
 
 INCLUDEPATH += .\
                ./include \
@@ -21,90 +40,46 @@ HEADERS += ./include/stdafx.h \
            ./include/fvhmcomponent.h \
            ./include/fvhmcomponent_global.h \
            ./include/fvhmcomponentinfo.h \
-           ./include/core/consts.h \
-           ./include/core/datetime.h \
-           ./include/core/enums.h \
-           ./include/core/error.h \
-           ./include/core/exfil.h \
-           ./include/core/findroot.h \
-           ./include/core/funcs.h \
-           ./include/core/globals.h \
-           ./include/core/hash.h \
-           ./include/core/headers.h \
-           ./include/core/infil.h \
-           ./include/core/keywords.h \
-           ./include/core/lid.h \
-           ./include/core/macros.h \
-           ./include/core/mathexpr.h \
-           ./include/core/mempool.h \
-           ./include/core/objects.h \
-           ./include/core/odesolve.h \
-           ./include/core/swmm5.h \
-           ./include/core/text.h \
-           ./include/core/dataexchangecache.h \
-           ./include/swmmobjectitems.h \
-           ./include/swmmtimeseriesexchangeitems.h \
-           ./include/fvhmobjectitems.h \
-           ./include/fvhmtimeseriesexchangeitems.h
+           ./include/controlvolume.h \
+           ./include/sparsemat.h \
+           ./include/inletoutletflowbc.h \
+           ./include/wsebc.h \
+           ./include/sourcesinkbc.h \
+           ./include/edgebc.h \
+           ./include/qrsolve.h \
+           ./include/macros.h \
+           ./include/outletwseslope.h \
+           ./include/precipbc.h \
+           ./include/boundarycondition.h \
+           ./include/inflowinput.h \
+           ./include/cvwseoutput.h \
+           ./include/cvdepthoutput.h \
+           ./include/initialwsebc.h \
+           ./include/criticaldepthoutflowbc.h \
+           ./include/edgefluxesio.h
+
 
 SOURCES += ./src/stdafx.cpp \
            ./src/fvhmcomponent.cpp \
            ./src/fvhmcomponentinfo.cpp \
-           ./src/core/climate.c \
-           ./src/core/controls.c \
-           ./src/core/culvert.c \
-           ./src/core/datetime.c \
-           ./src/core/dwflow.c \
-           ./src/core/dynwave.c \
-           ./src/core/error.c \
-           ./src/core/exfil.c \
-          ./src/core/findroot.c \
-          ./src/core/flowrout.c \
-          ./src/core/forcmain.c \
-          ./src/core/gage.c \
-          ./src/core/gwater.c \
-          ./src/core/hash.c \
-          ./src/core/hotstart.c \
-          ./src/core/iface.c \
-          ./src/core/infil.c \
-          ./src/core/inflow.c \
-          ./src/core/input.c \
-          ./src/core/inputrpt.c \
-          ./src/core/keywords.c \
-          ./src/core/kinwave.c \
-          ./src/core/landuse.c \
-          ./src/core/lid.c \
-          ./src/core/lidproc.c \
-          ./src/core/link.c \
-          ./src/core/massbal.c \
-          ./src/core/mathexpr.c \
-          ./src/core/mempool.c \
-          ./src/core/node.c \
-          ./src/core/odesolve.c \
-          ./src/core/output.c \
-          ./src/core/project.c \
-          ./src/core/qualrout.c \
-          ./src/core/rain.c \
-          ./src/core/rdii.c \
-          ./src/core/report.c \
-          ./src/core/roadway.c \
-          ./src/core/routing.c \
-          ./src/core/runoff.c \
-          ./src/core/shape.c \
-          ./src/core/snow.c \
-          ./src/core/stats.c \
-          ./src/core/statsrpt.c \
-          ./src/core/subcatch.c \
-          ./src/core/surfqual.c \
-          ./src/core/swmm5.c \
-          ./src/core/table.c \
-          ./src/core/toposort.c \
-          ./src/core/transect.c \
-          ./src/core/treatmnt.c \
-          ./src/core/xsect.c \
-          ./src/core/dataexchangecache.cpp \
-          ./src/fvhmtimeseriesexchangeitems.cpp
-
+           ./src/main.cpp \
+           ./src/controlvolume.cpp \
+           ./src/sparsemat.cpp \
+           ./src/inletoutletflowbc.cpp \
+           ./src/wsebc.cpp \
+           ./src/fvhmcomponentcompute.cpp \
+           ./src/fvhmcomponentcompgeom.cpp \
+           ./src/edgebc.cpp \
+           ./src/fvhmcomponentio.cpp \
+           ./src/qrsolve.cpp \
+           ./src/outletwseslope.cpp \
+           ./src/precipbc.cpp \
+           ./src/inflowinput.cpp \
+           ./src/cvwseoutput.cpp \
+           ./src/cvdepthoutput.cpp \
+           ./src/initialwsebc.cpp \
+    src/criticaldepthoutflowbc.cpp \
+    src/edgefluxesio.cpp
 
 
 macx{
@@ -112,18 +87,101 @@ macx{
     INCLUDEPATH += /usr/local/include \
                    /usr/local/include/libiomp
 
-#    QMAKE_CC = clang-omp
-#    QMAKE_CXX = clang-omp++
-#    QMAKE_LINK = $$QMAKE_CXX
+    LIBS += -L/usr/local/lib -lnetcdf_c++4 \
+            -L/usr/local/lib/ -lHYPRE
 
-#    QMAKE_CFLAGS = -fopenmp
-#    QMAKE_LFLAGS = -fopenmp
-#    QMAKE_CXXFLAGS = -fopenmp
-#    QMAKE_CXXFLAGS_RELEASE = $$QMAKE_CXXFLAGS
-#    QMAKE_CXXFLAGS_DEBUG = $$QMAKE_CXXFLAGS
+    contains(DEFINES,USE_OPENMP){
 
-    LIBS += -L/usr/local/lib/ -liomp5
+        QMAKE_CC=clang-omp
+        QMAKE_CXX=clang-omp++
+
+        QMAKE_CFLAGS+= -fopenmp
+        QMAKE_LFLAGS+= -fopenmp
+        QMAKE_CXXFLAGS+= -fopenmp
+
+        INCLUDEPATH += /usr/local/include/libiomp
+        LIBS += -L/usr/local/lib/ -liomp5
+
+
+      message("OpenMP enabled")
+
+    } else {
+      message("OpenMP disabled")
+    }
+
+    contains(DEFINES,USE_MPI){
+
+        QMAKE_CC = mpicc
+        QMAKE_CXX = mpic++
+        QMAKE_LINK = mpic++
+
+        QMAKE_CFLAGS += $$system(mpicc --showme:compile)
+        QMAKE_CXXFLAGS += $$system(mpic++ --showme:compile)
+        QMAKE_LFLAGS += $$system(mpic++ --showme:link)
+
+        LIBS += -L/usr/local/lib/ -lmpi
+
+      message("MPI enabled")
+
+    } else {
+      message("MPI disabled")
+    }
+
  }
+
+linux{
+
+INCLUDEPATH += /usr/include \
+               ../gdal/include
+
+LIBS += -L/usr/lib/ogdi -lgdal \
+        -L../gdal/lib -lgdal
+
+    contains(DEFINES,UTAH_CHPC){
+
+         INCLUDEPATH += /uufs/chpc.utah.edu/sys/installdir/hdf5/1.8.17-c7/include \
+                        /uufs/chpc.utah.edu/sys/installdir/netcdf-c/4.3.3.1/include \
+                        /uufs/chpc.utah.edu/sys/installdir/netcdf-cxx/4.3.0-c7/include \
+                        ../hypre/build/include 
+
+
+         LIBS += -L/uufs/chpc.utah.edu/sys/installdir/hdf5/1.8.17-c7/lib -lhdf5 \
+                 -L/uufs/chpc.utah.edu/sys/installdir/netcdf-cxx/4.3.0-c7/lib -lnetcdf_c++4 \
+                 -L../hypre/build/lib -lHYPRE
+
+         message("Compiling on CHPC")
+    }
+
+    contains(DEFINES,USE_OPENMP){
+
+    QMAKE_CFLAGS += -fopenmp
+    QMAKE_LFLAGS += -fopenmp
+    QMAKE_CXXFLAGS += -fopenmp
+
+    LIBS += -L/usr/lib/x86_64-linux-gnu -lgomp
+
+      message("OpenMP enabled")
+    } else {
+      message("OpenMP disabled")
+    }
+
+    contains(DEFINES,USE_MPI){
+
+        QMAKE_CC = mpicc
+        QMAKE_CXX = mpic++
+        QMAKE_LINK = mpic++
+
+        QMAKE_CFLAGS += $$system(mpicc --showme:compile)
+        QMAKE_CXXFLAGS += $$system(mpic++ --showme:compile)
+        QMAKE_LFLAGS += $$system(mpic++ --showme:link)
+
+        LIBS += -L/usr/local/lib/ -lmpi
+
+      message("MPI enabled")
+    } else {
+      message("MPI disabled")
+    }
+}
 
 CONFIG(debug, debug|release) {
 
@@ -136,6 +194,13 @@ CONFIG(debug, debug|release) {
    macx{
     LIBS += -L./../HydroCoupleSDK/build/debug -lHydroCoupleSDK.1.0.0
    }
+
+   linux{
+    LIBS += -L./../HydroCoupleSDK/build/debug -lHydroCoupleSDK
+   }
+
+
+   message("Debug mode...")
 }
 
 CONFIG(release, debug|release) {
@@ -150,4 +215,23 @@ CONFIG(release, debug|release) {
    macx{
     LIBS += -L./../HydroCoupleSDK/lib -lHydroCoupleSDK.1.0.0
    }
+
+   linux{
+    LIBS += -L./../HydroCoupleSDK/lib -lHydroCoupleSDK
+   }
+
+   message("Release mode...")
+}
+
+contains(DEFINES,USE_SUITESPARSE){
+
+INCLUDEPATH += ../SuiteSparse/include
+
+LIBS += -L../SuiteSparse/lib -lspqr \
+        -L../SuiteSparse/lib -lsuitesparseconfig \
+        -L../SuiteSparse/lib -lcholmod \
+        -L../SuiteSparse/lib -lamd \
+        -L../SuiteSparse/lib -lcolamd
+
+
 }
