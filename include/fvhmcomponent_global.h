@@ -1,5 +1,5 @@
  /*!
- *  \file    fvhmcompopnentinfo.h
+ *  \file    fvhmcomponent_global.h
  *  \author  Caleb Amoa Buahin <caleb.buahin@gmail.com>
  *  \version 1.0.0.0
  *  \section Description

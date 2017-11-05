@@ -18,11 +18,21 @@ using namespace netCDF::exceptions;
 
 bool FVHMComponent::initializeOutputFilesArguments(QString &message)
 {
-  if(initializeNetCDFOutputFile(message) &&
-     initializeShapeOutputFile(message) &&
-     initializeLogFile(message))
+  if(mpiProcessRank() == 0)
   {
-    return true;
+    if(initializeNetCDFOutputFile(message) &&
+       initializeShapeOutputFile(message) &&
+       initializeLogFile(message))
+    {
+      return true;
+    }
+  }
+  else
+  {
+    if(initializeNetCDFOutputFile(message))
+    {
+      return true;
+    }
   }
 
   return false;
@@ -30,6 +40,7 @@ bool FVHMComponent::initializeOutputFilesArguments(QString &message)
 
 bool FVHMComponent::initializeNetCDFOutputFile(QString &message)
 {
+
   QString file = (*m_outputFilesArgument)["Output NetCDF File"];
 
   if(file.isEmpty())
@@ -42,116 +53,127 @@ bool FVHMComponent::initializeNetCDFOutputFile(QString &message)
     return false;
   }
 
-  if(m_outputNetCDF)
+  if(mpiProcessRank() == 0)
   {
-    delete m_outputNetCDF;
-    m_outputNetCDF = nullptr;
+    if(m_outputNetCDF)
+    {
+      m_outputNetCDF->sync();
+      m_outputNetCDF->close();
+      delete m_outputNetCDF;
+      m_outputNetCDF = nullptr;
+    }
+
+
+
+    GeometryFactory::writeTINToNetCDF(m_TINMeshArgument->TINInternal(), m_outputNetCDFFile.absoluteFilePath(), message);
+
+    try
+    {
+
+      m_outputNetCDF = new NcFile(m_outputNetCDFFile.absoluteFilePath().toStdString() , NcFile::write);
+
+      NcDim edge = m_outputNetCDF->getDim("edges");
+
+      if(edge.isNull())
+        m_outputNetCDF->addDim("edges",3);
+
+      //time variable
+      NcDim timeDim = m_outputNetCDF->addDim("time");
+      // NcDim vertDim = m_outputNetCDF->getDim("vertices");
+
+      NcVar timeVar = m_outputNetCDF->addVar("time", NcType::nc_DOUBLE , timeDim);
+      timeVar.putAtt("time:long_name","time");
+      timeVar.putAtt("time:units","days since 1858-11-17 0:0:0");
+      timeVar.putAtt("time:calendar","modified_julian");
+
+      //add variables
+
+      NcVar inflowTotalVar = m_outputNetCDF->addVar("externalInflowTotalVolume","double", std::vector<std::string>({"time"}));
+      inflowTotalVar.putAtt("externalInflowTotalVolume:long_name","inflow");
+      inflowTotalVar.putAtt("externalInflowTotalVolume:units","m^3");
+
+      NcVar outflowTotalVar = m_outputNetCDF->addVar("externalOutflowTotalVolume","double", std::vector<std::string>({"time"}));
+      outflowTotalVar.putAtt("externalOutflowTotalVolume:long_name","inflow");
+      outflowTotalVar.putAtt("externalOutflowTotalVolume:units","m^3");
+
+      NcVar inflowVar = m_outputNetCDF->addVar("externalInflowTotalCellVolume","double", std::vector<std::string>({"time","triangles"}));
+      inflowVar.putAtt("externalInflowTotalCellVolume:long_name","inflow");
+      inflowVar.putAtt("externalInflowTotalCellVolume:units","m^3");
+
+      NcVar outflowVar = m_outputNetCDF->addVar("externalOutflowTotalCellVolume","double", std::vector<std::string>({"time","triangles"}));
+      outflowVar.putAtt("externalOutflowTotalCellVolume:long_name","inflow");
+      outflowVar.putAtt("externalOutflowTotalCellVolume:units","m^3");
+
+      NcVar depthVar = m_outputNetCDF->addVar("depth","double", std::vector<std::string>({"time","triangles"}));
+      depthVar.putAtt("depth:long_name","depth");
+      depthVar.putAtt("depth:units","m");
+
+      NcVar maxdepthVar = m_outputNetCDF->addVar("maxdepth","double", std::vector<std::string>({"triangles"}));
+      maxdepthVar.putAtt("maxdepth:long_name","depth");
+      maxdepthVar.putAtt("maxdepth:units","m");
+
+      NcVar elevVar = m_outputNetCDF->addVar("elev","double", std::vector<std::string>({"time","triangles"}));
+      elevVar.putAtt("elev:long_name","elevation");
+      elevVar.putAtt("elev:units","m");
+
+      NcVar maxElevVar = m_outputNetCDF->addVar("maxelev","double", std::vector<std::string>({"triangles"}));
+      maxElevVar.putAtt("maxelev:long_name","elevation");
+      maxElevVar.putAtt("maxelev:units","m");
+
+      NcVar uVar = m_outputNetCDF->addVar("uvel","double", std::vector<std::string>({"time","triangles"}));
+      uVar.putAtt("uvel:long_name","u_velocity");
+      uVar.putAtt("uvel:units","m/s");
+
+      NcVar maxUVar = m_outputNetCDF->addVar("maxuvel","double", std::vector<std::string>({"triangles"}));
+      maxUVar.putAtt("maxuvel:long_name","u_velocity");
+      maxUVar.putAtt("maxuvel:units","m/s");
+
+      NcVar vVar = m_outputNetCDF->addVar("vvel","double", std::vector<std::string>({"time","triangles"}));
+      vVar.putAtt("vvel:long_name","v_velocity");
+      vVar.putAtt("vvel:units","m/s");
+
+      NcVar maxVVar = m_outputNetCDF->addVar("maxvvel","double", std::vector<std::string>({"triangles"}));
+      maxVVar.putAtt("maxvvel:long_name","v_velocity");
+      maxVVar.putAtt("maxvvel:units","m/s");
+
+      NcVar uVarRes = m_outputNetCDF->addVar("uvelresidual","double", std::vector<std::string>({"time","triangles"}));
+      uVarRes.putAtt("uvelresidual:long_name","uvel_residual_velocity");
+      uVarRes.putAtt("uvelresidual:units","m/s");
+
+      NcVar vVarRes = m_outputNetCDF->addVar("vvelresidual","double", std::vector<std::string>({"time","triangles"}));
+      vVarRes.putAtt("vvelresidual:long_name","vvel_residual_velocity");
+      vVarRes.putAtt("vvelresidual:units","m/s");
+
+      NcVar continuityRes = m_outputNetCDF->addVar("continuityresidual","double", std::vector<std::string>({"time","triangles"}));
+      continuityRes.putAtt("continuityresidual:long_name","continuity_residual");
+      continuityRes.putAtt("continuityresidual:units","m3/s");
+
+      NcVar continuityResTot = m_outputNetCDF->addVar("totalcontinuityresidual","double", std::vector<std::string>({"time"}));
+      continuityResTot.putAtt("totalcontinuityresidual:long_name","totalcontinuity_residual");
+      continuityResTot.putAtt("totalcontinuityresidual:units","m3/s");
+
+      NcVar pressurRes = m_outputNetCDF->addVar("pressureresidual","double", std::vector<std::string>({"time","triangles"}));
+      pressurRes.putAtt("pressureresidual:long_name","pressure_residual");
+      pressurRes.putAtt("pressureresidual:units","m");
+
+
+      NcVar edgeFlow = m_outputNetCDF->addVar("edgeflow","double",std::vector<std::string>({"time","triangles","edges"}));
+      edgeFlow.putAtt("edgeflow:long_name","control_volume_edge_flow");
+      edgeFlow.putAtt("edgeflow:units","m^3/s");
+
+      //add other variables
+
+      m_outputDir = m_outputNetCDFFile.absoluteDir();
+    }
+    catch(NcException &e)
+    {
+      message = QString(e.what());
+      return false;
+    }
   }
-
-  GeometryFactory::writeTINToNetCDF(m_TINMeshArgument->TINInternal(), m_outputNetCDFFile.absoluteFilePath(), message);
-
-  try
+  else
   {
-
-    m_outputNetCDF = new NcFile(m_outputNetCDFFile.absoluteFilePath().toStdString() , NcFile::write);
-
-    NcDim edge = m_outputNetCDF->getDim("edges");
-
-    if(edge.isNull())
-      m_outputNetCDF->addDim("edges",3);
-
-    //time variable
-    NcDim timeDim = m_outputNetCDF->addDim("time");
-    // NcDim vertDim = m_outputNetCDF->getDim("vertices");
-
-    NcVar timeVar = m_outputNetCDF->addVar("time", NcType::nc_DOUBLE , timeDim);
-    timeVar.putAtt("time:long_name","time");
-    timeVar.putAtt("time:units","days since 1858-11-17 0:0:0");
-    timeVar.putAtt("time:calendar","modified_julian");
-
-    //add variables
-
-    NcVar inflowTotalVar = m_outputNetCDF->addVar("externalInflowTotalVolume","double", std::vector<std::string>({"time"}));
-    inflowTotalVar.putAtt("externalInflowTotalVolume:long_name","inflow");
-    inflowTotalVar.putAtt("externalInflowTotalVolume:units","m^3");
-
-    NcVar outflowTotalVar = m_outputNetCDF->addVar("externalOutflowTotalVolume","double", std::vector<std::string>({"time"}));
-    outflowTotalVar.putAtt("externalOutflowTotalVolume:long_name","inflow");
-    outflowTotalVar.putAtt("externalOutflowTotalVolume:units","m^3");
-
-    NcVar inflowVar = m_outputNetCDF->addVar("externalInflowTotalCellVolume","double", std::vector<std::string>({"time","triangles"}));
-    inflowVar.putAtt("externalInflowTotalCellVolume:long_name","inflow");
-    inflowVar.putAtt("externalInflowTotalCellVolume:units","m^3");
-
-    NcVar outflowVar = m_outputNetCDF->addVar("externalOutflowTotalCellVolume","double", std::vector<std::string>({"time","triangles"}));
-    outflowVar.putAtt("externalOutflowTotalCellVolume:long_name","inflow");
-    outflowVar.putAtt("externalOutflowTotalCellVolume:units","m^3");
-
-    NcVar depthVar = m_outputNetCDF->addVar("depth","double", std::vector<std::string>({"time","triangles"}));
-    depthVar.putAtt("depth:long_name","depth");
-    depthVar.putAtt("depth:units","m");
-
-    NcVar maxdepthVar = m_outputNetCDF->addVar("maxdepth","double", std::vector<std::string>({"triangles"}));
-    maxdepthVar.putAtt("maxdepth:long_name","depth");
-    maxdepthVar.putAtt("maxdepth:units","m");
-
-    NcVar elevVar = m_outputNetCDF->addVar("elev","double", std::vector<std::string>({"time","triangles"}));
-    elevVar.putAtt("elev:long_name","elevation");
-    elevVar.putAtt("elev:units","m");
-
-    NcVar maxElevVar = m_outputNetCDF->addVar("maxelev","double", std::vector<std::string>({"triangles"}));
-    maxElevVar.putAtt("maxelev:long_name","elevation");
-    maxElevVar.putAtt("maxelev:units","m");
-
-    NcVar uVar = m_outputNetCDF->addVar("uvel","double", std::vector<std::string>({"time","triangles"}));
-    uVar.putAtt("uvel:long_name","u_velocity");
-    uVar.putAtt("uvel:units","m/s");
-
-    NcVar maxUVar = m_outputNetCDF->addVar("maxuvel","double", std::vector<std::string>({"triangles"}));
-    maxUVar.putAtt("maxuvel:long_name","u_velocity");
-    maxUVar.putAtt("maxuvel:units","m/s");
-
-    NcVar vVar = m_outputNetCDF->addVar("vvel","double", std::vector<std::string>({"time","triangles"}));
-    vVar.putAtt("vvel:long_name","v_velocity");
-    vVar.putAtt("vvel:units","m/s");
-
-    NcVar maxVVar = m_outputNetCDF->addVar("maxvvel","double", std::vector<std::string>({"triangles"}));
-    maxVVar.putAtt("maxvvel:long_name","v_velocity");
-    maxVVar.putAtt("maxvvel:units","m/s");
-
-    NcVar uVarRes = m_outputNetCDF->addVar("uvelresidual","double", std::vector<std::string>({"time","triangles"}));
-    uVarRes.putAtt("uvelresidual:long_name","uvel_residual_velocity");
-    uVarRes.putAtt("uvelresidual:units","m/s");
-
-    NcVar vVarRes = m_outputNetCDF->addVar("vvelresidual","double", std::vector<std::string>({"time","triangles"}));
-    vVarRes.putAtt("vvelresidual:long_name","vvel_residual_velocity");
-    vVarRes.putAtt("vvelresidual:units","m/s");
-
-    NcVar continuityRes = m_outputNetCDF->addVar("continuityresidual","double", std::vector<std::string>({"time","triangles"}));
-    continuityRes.putAtt("continuityresidual:long_name","continuity_residual");
-    continuityRes.putAtt("continuityresidual:units","m3/s");
-
-    NcVar continuityResTot = m_outputNetCDF->addVar("totalcontinuityresidual","double", std::vector<std::string>({"time"}));
-    continuityResTot.putAtt("totalcontinuityresidual:long_name","totalcontinuity_residual");
-    continuityResTot.putAtt("totalcontinuityresidual:units","m3/s");
-
-    NcVar pressurRes = m_outputNetCDF->addVar("pressureresidual","double", std::vector<std::string>({"time","triangles"}));
-    pressurRes.putAtt("pressureresidual:long_name","pressure_residual");
-    pressurRes.putAtt("pressureresidual:units","m");
-
-
-    NcVar edgeFlow = m_outputNetCDF->addVar("edgeflow","double",std::vector<std::string>({"time","triangles","edges"}));
-    edgeFlow.putAtt("edgeflow:long_name","control_volume_edge_flow");
-    edgeFlow.putAtt("edgeflow:units","m^3/s");
-
-    //add other variables
-
     m_outputDir = m_outputNetCDFFile.absoluteDir();
-  }
-  catch(NcException &e)
-  {
-    message = QString(e.what());
-    return false;
   }
 
   return true;
@@ -425,13 +447,7 @@ void FVHMComponent::writeToNetCDF()
   try
   {
 
-    if(m_writeFrequencyCounter >= m_writeFrequency)
-    {
-      m_writeFrequencyCounter = 0;
-      delete m_outputNetCDF;
-      m_outputNetCDF = nullptr;
-      m_outputNetCDF = new NcFile(m_outputNetCDFFile.absoluteFilePath().toStdString() , NcFile::write);
-    }
+
 
 
     if(m_outputNetCDF && !m_outputNetCDF->isNull())
@@ -510,13 +526,19 @@ void FVHMComponent::writeToNetCDF()
         externalOutflowValues[i] = cv->totalExternalOutflow;
 
 #ifdef USE_OPENMP
-#pragma omp critical
+#pragma omp atomic
 #endif
-        {
-          contResTot += cv->contResidualTotal;
-          inflowTotal += cv->totalExternalInflow;
-          outflowTotal += cv->totalExternalOutflow;
-        }
+        contResTot += cv->contResidualTotal;
+
+#ifdef USE_OPENMP
+#pragma omp atomic
+#endif
+        inflowTotal += cv->totalExternalInflow;
+
+#ifdef USE_OPENMP
+#pragma omp atomic
+#endif
+        outflowTotal += cv->totalExternalOutflow;
       }
 
       externalInflowVar.putVar(std::vector<size_t>({currentTime, 0}), std::vector<size_t>({1, (size_t)m_numCells}), externalInflowValues);
@@ -560,11 +582,12 @@ void FVHMComponent::writeToNetCDF()
       delete[] contResValues;
       delete[] pressResValues;
 
-
-
-
       m_writeFrequencyCounter++;
 
+      //    if(m_writeFrequencyCounter >= m_writeFrequency)
+      {
+        m_outputNetCDF->sync();
+      }
     }
 
   }
@@ -586,7 +609,7 @@ void FVHMComponent::writeToCSV()
 
       if((m_writeActiveCellsOnly && cv->wetIndex) || !m_writeActiveCellsOnly)
       {
-        double inflow = cv->inflow;
+        double inflow = cv->inflowOutflow;
 
         for(int j = 0; j < cv->numEdges; j++)
         {
@@ -602,9 +625,16 @@ void FVHMComponent::writeToCSV()
         HCVertex *v2 = cv->vertices[1];
         HCVertex *v3 = cv->vertices[2];
 
-        double z1 = std::max(cv->nz[0], cv->nWSE[0]);
-        double z2 = std::max(cv->nz[1], cv->nWSE[1]);
-        double z3 = std::max(cv->nz[2], cv->nWSE[2]);
+        double z1 = cv->nWSE[0];
+        double z2 = cv->nWSE[1];
+        double z3 = cv->nWSE[2];
+
+        //        if(cv->wetIndex == 0)
+        {
+          z1 = std::max(cv->nz[0], z1);
+          z2 = std::max(cv->nz[1], z2);
+          z3 = std::max(cv->nz[2], z3);
+        }
 
         m_CSVOutputTextStream << "\"POLYGON Z ((" << v1->x() << " " << v1->y() << " " << z1 << ","
                               << v2->x() << " " << v2->y() << " " << z2 << ","
@@ -631,7 +661,6 @@ void FVHMComponent::writeToCSV()
       }
     }
 
-    if(m_writeFrequencyCounter >= m_writeFrequency)
     {
       m_CSVOutputTextStream.flush();
     }

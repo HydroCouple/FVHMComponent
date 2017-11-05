@@ -33,6 +33,17 @@
 #include <QVector>
 #include <tuple>
 
+#ifdef USE_OPENMP
+#include <omp.h>
+#endif
+
+#ifdef USE_MPI
+#include <mpi.h>
+#else
+typedef int MPI_Comm
+typedef int MPI_Group
+#endif
+
 class FVHMComponentInfo;
 class FVHMInputObjectItem;
 class FVHMOutputObjectItem;
@@ -70,6 +81,15 @@ namespace netCDF
   class NcFile;
 }
 
+class FVHMComponent;
+
+typedef int (FVHMComponent::*PerformStepFunction)(double tStep, int &numIterations,
+                                                 double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
+                                                 double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
+                                                 double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
+                                                 double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
+                                                 bool &converged, QString &errorMessage);
+
 class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
 {
     friend class FVHMComponentInfo;
@@ -87,6 +107,13 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
     Q_OBJECT
 
   public:
+
+    enum MPIMessageTags
+    {
+      InitializeCommunicator = 123,
+      SolveEquation = 124,
+      RecieveResults = 125
+    };
 
     enum AdaptiveTSMode
     {
@@ -230,6 +257,8 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
 
     bool initializeMiscOptionsArguments(QString &message);
 
+    bool initializeMPIResources(QString &message);
+
     void createAdaptedOutputFactories() override;
 
     void createInputs() override;
@@ -258,32 +287,34 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
 
     void prepareForNextTimeStep();
 
-    ErrorCode performSimpleTimeStep(double tStep, int &numIterations, int &numWetCells,
-                                    double &uvelRelResidualNormInit, double &uvelRelResidualNormFin,
-                                    double &vvelRelResidualNormInit, double &vvelRelResidualNormFin,
-                                    double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin,
+    void setWetAndContCells();
+
+
+    int performSimpleTimeStep(double tStep, int &numIterations,
+                                    double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
+                                    double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
+                                    double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
                                     double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
                                     bool &converged, QString &errorMessage);
 
-    ErrorCode performSimpleCTimeStep(double tStep, int &numIterations, int &numWetCells,
-                                     double &uvelRelResidualNormInit, double &uvelRelResidualNormFin,
-                                     double &vvelRelResidualNormInit, double &vvelRelResidualNormFin,
-                                     double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin,
+    int performSimpleCTimeStep(double tStep, int &numIterations,
+                                     double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
+                                     double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
+                                     double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
                                      double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
                                      bool &converged, QString &errorMessage);
 
-    ErrorCode performPISOTimeStep(double tStep, int &numIterations, int &numWetCells,
-                                  double &uvelRelResidualNormInit, double &uvelRelResidualNormFin,
-                                  double &vvelRelResidualNormInit, double &vvelRelResidualNormFin,
-                                  double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin,
+    int performPISOTimeStep(double tStep, int &numIterations,
+                                  double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
+                                  double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
+                                  double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
                                   double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
                                   bool &converged, QString &errorMessage);
 
-    void getWetCells(int &numWetCells);
 
-    bool hasEdgeFlow(TriCV *cv);
+    bool neighbourIsWet(TriCV *cv, double wetCellDepth);
 
-    ErrorCode solveMomentumEquations(double tStep, double &uvelRelResidualNorm, int numWetCells, int uv, QString &errorMessage);
+    ErrorCode solveMomentumEquations(double tStep, int uv, double &uvelRelResidualNorm, int &numSolvIters, QString &errorMessage);
 
     void interpolateWettedCellVelocities();
 
@@ -293,7 +324,7 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
                                 const Vect &grad_c, const Vect &grad_d,
                                 double phi_c, double phi_d, double r_cdX, double r_cdY);
 
-    ErrorCode solvePressureCorrection(double tStep, double &pressureRelResidualNorm, double minorTermsCoeff, QString &errorMessage);
+    ErrorCode solvePressureCorrection(double tStep, double &pressureRelResidualNorm, double minorTermsCoeff, int &numSolvIters, QString &errorMessage);
 
     void applyPressureCorrections();
 
@@ -323,7 +354,13 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
 
     void calculateCellWSEGradients();
 
-    ErrorCode solve(const SparseMatrix &A, const double b[], double x[], double residuals[], double &relativeResidualNorm, QString &errorMessage);
+    void calculateCellZCorrGradients();
+
+    ErrorCode mpiSolve(const SparseMatrix &A, const double b[], double x[],
+                       double residuals[], double &relativeResidualNorm, int &numIterations, QString &errorMessage);
+
+    int solve(MPI_Comm communicator, const SparseMatrix &A, int ilower, int iupper,
+              const double b[], double x[], double residuals[], double &relativeResidualNorm, int &numIterations);
 
     static double sign(double value);
 
@@ -397,11 +434,11 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
     GeometryOutputDouble *m_CVAreasOutput = nullptr;
 
     Dimension *m_patchDimension = nullptr,
-              *m_edgeDimension = nullptr,
-              *m_nodeDimension = nullptr,
-              *m_idDimension = nullptr,
-              *m_geometryDimension = nullptr,
-              *m_timeDimension = nullptr;
+    *m_edgeDimension = nullptr,
+    *m_nodeDimension = nullptr,
+    *m_idDimension = nullptr,
+    *m_geometryDimension = nullptr,
+    *m_timeDimension = nullptr;
 
     bool m_useAdaptiveTimeStep = true,
     m_verbose = true,
@@ -412,7 +449,7 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
     m_endDateTime = 1.0,
     m_currentDateTime = 0.0,
     m_previouslyWrittenDateTime = std::numeric_limits<double>::lowest(),
-    m_minTimeStep = 0.1, m_maxTimeStep = 10.0, m_maxTimeStepCF = 0.1,
+    m_minTimeStep = 0.1, m_maxTimeStep = 10.0, m_maxTimeStepIncreaseCF = 0.1, m_maxTimeStepDecreaseCF = 0.1,
     m_outputTimeStep = 30.0,
     m_maxCourantNumber = 1.0,
     m_nextOutputTime = 0.0,
@@ -446,8 +483,11 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
     m_timeStepCount = 0.0,
     m_convergedCount = 0.0,
     m_useAdvection = 1.0,
-    m_useWall = 0.0,
-    m_epsilon = 0.0;
+    m_useWall = 1.0,
+    m_epsilon = 0.0,
+    m_maxWSEGradient = 3.0,
+    m_numFractionalSteps = 2.0,
+    m_wetDryFactor = 0.05;
 
     QDateTime m_qtDateTime;
 
@@ -457,9 +497,9 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
     m_innerItersPerTimeStep = 2,
     m_solverMaximumNumberOfIterations = 150,
     m_solverAMGPreconditionerNumberOfIterations = 1,
-    m_solverType = 1,
+    m_solverType = 0,
     m_initTimeStepCycle = 0,
-    m_numFixedTimeSteps = 20,
+    m_numFixedTimeSteps = 100,
     m_pressureVelocityCouplingType = 0,
     m_numCells = 0,
     m_advectionScheme = 0,
@@ -468,11 +508,15 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
     m_writeFrequency = 20,
     m_writeFrequencyCounter = 0,
     m_numPressureCorrectionIterations = 1,
-    m_currentCoeff = 0;
+    m_currentCoeff = 0,
+    m_mpiSolverSplitThreshold = 100,
+    m_numWetCells, m_numContCells;
+
 
     AdaptiveTSMode m_adaptiveTSMode = AdaptiveTSMode::MaxCourantNumber;
 
     std::vector<TriCV*> m_controlVolumes;
+    std::vector<int> m_wetCells, m_contCells;
     QFileInfo m_outputNetCDFFile, m_outputShapefile, m_outputShapefileJoin, m_logFile, m_edgeFluxesFile;
     QDir m_outputDir;
     QList<QSharedPointer<HCGeometry>> m_sharedTriangles;
@@ -480,6 +524,13 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
     netCDF::NcFile *m_outputNetCDF = nullptr;
     QTextStream m_logFileTextStream, m_CSVOutputTextStream;
     Octree *m_octree;
+    PerformStepFunction performStep = nullptr;
+
+    //mpi stuff
+    MPI_Group m_ComponentMPIGroup , m_worldGroup;
+    MPI_Comm m_ComponentMPIComm;
+    bool m_mpiResourcesInitialized = false;
+    std::vector<int> m_allocatedProcesses;
 };
 
 Q_DECLARE_METATYPE(FVHMComponent*)

@@ -210,9 +210,9 @@ void InflowInput::applyData()
     double value = 0.0;
     getValue(currentTimeIndex, cv->index,0,0,&value);
 
-    if(value != missingValue)
+    if(value != missingValue && (value > 0.0 || (value < 0.0 && cv->wetIndex)))
     {
-      cv->inflow += value;
+      cv->inflowOutflow += value;
     }
   }
 }

@@ -146,7 +146,7 @@ void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTi
 
               double vel = value/denom;
 
-              if(fabs(denom - 0.0) > std::numeric_limits<double>::epsilon() && fabs(vel) <= 5.0)
+              if(cv->wetIndex && fabs(denom - 0.0) > std::numeric_limits<double>::epsilon() && fabs(vel) <= 4.0)
               {
                 faceVel.value =  vel;
                 faceVel.vel->v[0] = vel * cv->e_n[faceIndex].v[0];
@@ -154,7 +154,7 @@ void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTi
                 faceVel.associatedValue = value;
 
                 if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                  printf("FVHM QIn: %f, VIn: %f, EdgeDepth: %f\n",value,vel,cv->faceDepths[faceIndex].value);
+                  printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",value,vel,faceVel.vel->v[0], faceVel.vel->v[1], cv->faceDepths[faceIndex].value);
               }
               else
               {
@@ -162,7 +162,7 @@ void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTi
                 faceVel.vel->v[1] = 0.0;
                 faceVel.value = 0.0;
                 faceVel.associatedValue = 0.0;
-                cv->inflow -= value;
+                cv->inflowOutflow -= value;
               }
             }
           }
@@ -201,7 +201,7 @@ void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTi
 
               double vel = value / denom;
 
-              if(fabs(denom - 0.0) > std::numeric_limits<double>::epsilon() && fabs(vel) <= 5.0)
+              if(cv->wetIndex && fabs(denom - 0.0) > std::numeric_limits<double>::epsilon() && fabs(vel) <= 4.0)
               {
                 faceVel.value =  vel * 1.00000;
                 faceVel.vel->v[0] = vel * cv->e_n[faceIndex].v[0] * 1.00000;
@@ -209,7 +209,7 @@ void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTi
                 faceVel.associatedValue = value;
 
                 if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                  printf("FVHM QIn: %f, VIn: %f, EdgeDepth: %f\n",value,vel,cv->faceDepths[faceIndex].value);
+                  printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",value,vel,faceVel.vel->v[0], faceVel.vel->v[1], cv->faceDepths[faceIndex].value);
               }
               else
               {
@@ -218,10 +218,10 @@ void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTi
                 faceVel.vel->v[1] = 0.0;
                 faceVel.value = 0.0;
                 faceVel.associatedValue = 0.0;
-                cv->inflow -= value;
+                cv->inflowOutflow -= value;
 
                 if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                  printf("FVHM QIn: %f, VIn: %f, EdgeDepth: %f\n",value,vel,cv->faceDepths[faceIndex].value);
+                  printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",value,vel,faceVel.vel->v[0], faceVel.vel->v[1], cv->faceDepths[faceIndex].value);
               }
             }
           }
@@ -246,7 +246,7 @@ void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTi
 
           FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
 
-          if(edgeDepth.value > 1e-3)
+          if(cv->wetIndex && edgeDepth.value > 1e-3)
           {
             double vel = min(m_defaultValue / denom , 0.0);
 
@@ -261,7 +261,7 @@ void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTi
             faceVel.vel->v[1] = 0.0;
             faceVel.value = 0.0;
             faceVel.associatedValue = 0.0;
-            cv->inflow += m_defaultValue;
+            cv->inflowOutflow += m_defaultValue;
           }
         }
       }
@@ -285,7 +285,7 @@ void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTi
 
         FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
 
-        if(edgeDepth.value > 1e-3)
+        if(cv->wetIndex && edgeDepth.value > 1e-3)
         {
           double vel = min(m_defaultValue / denom , 0.0);
 
@@ -300,7 +300,7 @@ void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTi
           faceVel.vel->v[1] = 0.0;
           faceVel.value = 0.0;
           faceVel.associatedValue = 0.0;
-          cv->inflow += m_defaultValue;
+          cv->inflowOutflow += m_defaultValue;
         }
       }
     }
@@ -362,7 +362,7 @@ void OutletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevT
               int faceIndex = edge->marker();
               double denom = cv->faceDepths[faceIndex].value * cv->r_eta[faceIndex];
 
-              if(cv->faceDepths[faceIndex].value >= 1e-1 /*m_modelComponent->m_wetCellDepth*/)
+              if(cv->faceDepths[faceIndex].value >= m_modelComponent->m_wetCellDepth)
               {
                 double vel = value / denom;
                 cv->faceNormalVels[faceIndex].value =  vel;
@@ -372,7 +372,7 @@ void OutletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevT
               {
                 cv->faceNormalVels[faceIndex].value = 0.0;
                 cv->faceNormalVels[faceIndex].associatedValue = 0.0;
-                cv->inflow += value;
+                cv->inflowOutflow += value;
               }
             }
           }
@@ -409,7 +409,7 @@ void OutletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevT
 
               double denom = cv->faceDepths[faceIndex].value * cv->r_eta[faceIndex];
 
-              if(cv->faceDepths[faceIndex].value >= 1e-1 /*m_modelComponent->m_wetCellDepth*/)
+              if(cv->faceDepths[faceIndex].value >= m_modelComponent->m_wetCellDepth)
               {
                 double vel = value / denom;
                 cv->faceNormalVels[faceIndex].value = vel;
@@ -419,7 +419,7 @@ void OutletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevT
               {
                 cv->faceNormalVels[faceIndex].value = 0.0;
                 cv->faceNormalVels[faceIndex].associatedValue = 0.0;
-                cv->inflow += value;
+                cv->inflowOutflow += value;
               }
             }
           }
@@ -441,7 +441,7 @@ void OutletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevT
 
           double denom = cv->faceDepths[faceIndex].value * cv->r_eta[faceIndex];
 
-          if(cv->faceDepths[faceIndex].value >= 1e-1 /*m_modelComponent->m_wetCellDepth*/)
+          if(cv->faceDepths[faceIndex].value >= m_modelComponent->m_wetCellDepth)
           {
             double vel = max(m_defaultValue / denom , 0.0);
             cv->faceNormalVels[faceIndex].value = vel;
@@ -451,7 +451,7 @@ void OutletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevT
           {
             cv->faceNormalVels[faceIndex].value = 0.0;
             cv->faceNormalVels[faceIndex].associatedValue = 0.0;
-            cv->inflow += m_defaultValue;
+            cv->inflowOutflow += m_defaultValue;
           }
         }
       }
@@ -472,7 +472,7 @@ void OutletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevT
 
         double denom = cv->faceDepths[faceIndex].value * cv->r_eta[faceIndex];
 
-        if(cv->faceDepths[faceIndex].value >= 1e-1 /*m_modelComponent->m_wetCellDepth*/)
+        if(cv->faceDepths[faceIndex].value >= m_modelComponent->m_wetCellDepth)
         {
           double vel = max(m_defaultValue / denom , 0.0);
           cv->faceNormalVels[faceIndex].value = vel;
@@ -482,7 +482,7 @@ void OutletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevT
         {
           cv->faceNormalVels[faceIndex].value = 0.0;
           cv->faceNormalVels[faceIndex].associatedValue = 0.0;
-          cv->inflow += m_defaultValue;
+          cv->inflowOutflow += m_defaultValue;
         }
       }
     }

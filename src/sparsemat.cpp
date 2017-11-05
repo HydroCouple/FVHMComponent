@@ -8,11 +8,14 @@
 #include <QString>
 #include <QDebug>
 
-SparseMatrix::SparseMatrix(int row, int maxColumn):
-  m_rowCount(row),
-  m_maxColCount(maxColumn)
+SparseMatrix::SparseMatrix(int ilower, int iupper, int columnCount, int maxColSize):
+  m_rowCount(iupper-ilower + 1),
+  m_columnCount(columnCount),
+  m_maxColSize(maxColSize),
+  m_ilower(ilower),
+  m_iupper(iupper)
 {
-  m_rows = new int[m_rowCount];
+  //  m_rows = new int[m_rowCount];
   m_ncols = new int[m_rowCount];
 
   m_colIndexes = new int*[m_rowCount];
@@ -23,24 +26,24 @@ SparseMatrix::SparseMatrix(int row, int maxColumn):
 #endif
   for(int i = 0 ; i < m_rowCount ; i++)
   {
-    m_rows[i] = i;
+//    m_rows[i] = i + ilower;
     m_ncols[i] = 0;
 
-    int *colIndexes = new int[m_maxColCount];
+    int *colIndexes = new int[m_maxColSize];
 
-    for(int j = 0 ; j < m_maxColCount; j++)
+    for(int j = 0 ; j < m_maxColSize; j++)
     {
       colIndexes[j] = -1;
     }
 
     m_colIndexes[i] = colIndexes;
-    m_values[i] = new double[m_maxColCount];
+    m_values[i] = new double[m_maxColSize];
   }
 }
 
 SparseMatrix::~SparseMatrix()
 {
-  delete[] m_rows;
+  //  delete[] m_rows;
   delete[] m_ncols;
 
 #ifdef USE_OPENMP
@@ -56,8 +59,34 @@ SparseMatrix::~SparseMatrix()
   delete[] m_values;
 }
 
+int SparseMatrix::ilower() const
+{
+  return m_ilower;
+}
+
+int SparseMatrix::iupper() const
+{
+  return m_iupper;
+}
+
+int SparseMatrix::rowCount() const
+{
+  return m_rowCount;
+}
+
+int SparseMatrix::columnCount() const
+{
+  return m_columnCount;
+}
+
+int SparseMatrix::maxColumnSize() const
+{
+  return m_maxColSize;
+}
+
 const double &SparseMatrix::operator ()(int row, int column) const
 {
+  row = row - m_ilower;
   int *colIndexes = m_colIndexes[row];
   int ncols = m_ncols[row];
 
@@ -75,6 +104,7 @@ const double &SparseMatrix::operator ()(int row, int column) const
 
 double &SparseMatrix::operator ()(int row, int column)
 {
+  row = row - m_ilower;
   int *colIndexes = m_colIndexes[row];
   int ncols = m_ncols[row];
 
@@ -92,6 +122,7 @@ double &SparseMatrix::operator ()(int row, int column)
 
 void SparseMatrix::appendValue(int row, int column, double value)
 {
+  row = row - m_ilower;
   int ncols = m_ncols[row];
   m_values[row][ncols] = value;
   m_colIndexes[row][ncols] = column;
@@ -100,6 +131,8 @@ void SparseMatrix::appendValue(int row, int column, double value)
 
 void SparseMatrix::setValue(int row, int column, double value)
 {
+  row = row - m_ilower;
+
   int *colIndexes = m_colIndexes[row];
   int ncols = m_ncols[row];
 
@@ -115,60 +148,82 @@ void SparseMatrix::setValue(int row, int column, double value)
   appendValue(row,column,value);
 }
 
-void SparseMatrix::getDataByRow(double data[]) const
-{
-
-  int c = 0;
-
-  for(int i = 0 ; i < m_rowCount ; i++)
-  {
-    int ncols = m_ncols[i];
-
-    for(int j = 0; j < ncols; j++)
-    {
-      data[c] = m_values[i][j];
-      c++;
-    }
-  }
-}
-
-void SparseMatrix::getColumnIndexes(int indexes[]) const
-{
-  int c = 0;
-
-  for(int i = 0 ; i < m_rowCount ; i++)
-  {
-    int ncols = m_ncols[i];
-
-    for(int j = 0; j < ncols; j++)
-    {
-      indexes[c] = m_colIndexes[i][j];
-      c++;
-    }
-  }
-}
-
-int SparseMatrix::getDataSize() const
+int SparseMatrix::getDataSize(int ilower, int iupper) const
 {
   int count = 0;
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-  for(int i = 0; i < m_rowCount ; i++)
+  for(int i = ilower; i <= iupper ; i++)
   {
 #ifdef USE_OPENMP
 #pragma omp atomic
 #endif
-    count += m_ncols[i];
+    count += m_ncols[i - m_ilower];
   }
 
   return count;
 }
 
+void SparseMatrix::getValuesByRows(double data[], int ilower, int iupper) const
+{
+
+  int c = 0;
+
+  for(int i = ilower ; i <= iupper ; i++)
+  {
+    int rowIndex = i - m_ilower;
+    int ncols = m_ncols[rowIndex];
+
+    for(int j = 0; j < ncols; j++)
+    {
+      data[c] = m_values[rowIndex][j];
+      c++;
+    }
+  }
+}
+
+void SparseMatrix::getColumnIndexes(int indexes[], int ilower, int iupper) const
+{
+  int c = 0;
+
+  for(int i = ilower; i <= iupper ;i++)
+  {
+    int rowIndex = i - m_ilower;
+    int ncols = m_ncols[rowIndex];
+
+    for(int j = 0; j < ncols; j++)
+    {
+      indexes[c] = m_colIndexes[rowIndex][j];
+      c++;
+    }
+  }
+}
+
+void SparseMatrix::getRowIndexes(int indexes[], int ilower, int iupper) const
+{
+  int c = 0;
+  for(int i = ilower; i <= iupper; i++)
+  {
+    indexes[c] = i;
+    c++;
+  }
+}
+
+void SparseMatrix::getColsPerRow(int indexes[], int ilower, int iupper)  const
+{
+  int c = 0;
+  for(int i = ilower; i <= iupper; i++)
+  {
+    indexes[c] = m_ncols[i - m_ilower];
+    c++;
+  }
+}
+
 int SparseMatrix::getColumnCount(int row) const
 {
-  return m_ncols[row];
+  return m_ncols[row - m_ilower];
 }
 
 Matrix<double> SparseMatrix::toMatrix() const
@@ -186,20 +241,65 @@ Matrix<double> SparseMatrix::toMatrix() const
   return data;
 }
 
-int SparseMatrix::maxColumCount() const
+void SparseMatrix::serializeRows(int ilower, int iupper, double values[], int &counter) const
 {
-  return m_maxColCount;
+  values[counter] = ilower; counter++;
+  values[counter] = iupper; counter++;
+  values[counter] = m_columnCount; counter++;
+  values[counter] = m_maxColSize; counter++;
+
+  for(int i = ilower; i <= iupper; i++)
+  {
+    int r = i - m_ilower;
+    int ncols = m_ncols[r];
+    values[counter] = ncols; counter++;
+
+    for(int j = 0; j < ncols; j++)
+    {
+      values[counter] = m_colIndexes[r][j]; counter++;
+      values[counter] = m_values[r][j]; counter++;
+    }
+  }
 }
 
-int SparseMatrix::numRows() const
+void SparseMatrix::deserialize(const double values[], SparseMatrix *&sparse, double *&b, double *&x, int &counter)
 {
-  return m_rowCount;
+
+  int ilower = values[counter]; counter++;
+  int iupper = values[counter]; counter++;
+  int columnCount = values[counter]; counter++;
+  int maxColumnSize = values[counter]; counter++;
+
+  sparse = new SparseMatrix(ilower, iupper, columnCount, maxColumnSize);
+
+  for(int i = ilower; i <= iupper ; i++)
+  {
+    int ncols = values[counter]; counter++;
+
+    for(int j = 0; j < ncols; j++)
+    {
+      int colIndex = values[counter]; counter++;
+      double value = values[counter]; counter++;
+      sparse->appendValue(i,colIndex,value);
+    }
+  }
+
+  b = new double[iupper - ilower + 1];
+
+  for(int i = ilower; i <= iupper ; i++)
+  {
+    b[i-ilower] = values[counter]; counter++;
+  }
+
+  x = new double[iupper - ilower + 1];
+
+  for(int i = ilower; i <= iupper ; i++)
+  {
+    x[i-ilower] = values[counter]; counter++;
+  }
 }
 
 void SparseMatrix::print() const
 {
  toMatrix().printMatrix();
 }
-
-
-

@@ -138,9 +138,9 @@ void WSEBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
             faceVel.value = 0.0;
             faceVel.associatedValue = 0.0;
 
-            cv->calculateWSEGradient();
+//            cv->calculateWSEGradient();
 
-            if(depth > 1e-4)
+            if(depth > 1e-2)
             {
               double r_eta = cv->r_eta[faceIndex];
               double factor = edgeDepth.value * r_eta;
@@ -159,7 +159,7 @@ void WSEBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
                     faceVel.associatedValue = faceVel.value * factor;
 
                     if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                      printf("FVHM QOut: %f, VOut: %f, EdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,edgeDepth.value);
+                      printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
                   }
                   break;
                 case Inlet:
@@ -172,7 +172,7 @@ void WSEBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
                     faceVel.associatedValue = faceVel.value * factor;
 
                     if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                      printf("FVHM Qin: %f, Vin: %f, EdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,edgeDepth.value);
+                      printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
                   }
                   break;
                 case OutletInlet:
@@ -185,7 +185,7 @@ void WSEBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
                     faceVel.associatedValue = faceVel.value * factor;
 
                     if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                      printf("FVHM Qin: %f, Vin: %f, EdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,edgeDepth.value);
+                      printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
                   }
                   break;
                 case None:
@@ -229,7 +229,7 @@ void WSEBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
             edgeDepth.value = depth;
             edgeDepth.associatedValue = max(value , cv->snz[0]);
 
-            cv->calculateWSEGradient();
+//            cv->calculateWSEGradient();
 
             double factor = edgeDepth.value * cv->r_eta[faceIndex];
 
@@ -240,7 +240,7 @@ void WSEBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
             faceVel.associatedValue = 0.0;
 
 
-            if(edgeDepth.value > 1e-4)
+            if(edgeDepth.value > 1e-2)
             {
               switch (m_inletOutletType)
               {
@@ -254,7 +254,7 @@ void WSEBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
                     faceVel.associatedValue = faceVel.value * factor;
 
                     if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                      printf("FVHM QOut: %f, VOut: %f, EdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,edgeDepth.value);
+                      printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
                   }
                   break;
                 case Inlet:
@@ -267,7 +267,7 @@ void WSEBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
                     faceVel.associatedValue = faceVel.value * factor;
 
                     if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                      printf("FVHM Qin: %f, Vin: %f, EdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,edgeDepth.value);
+                      printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
                   }
                   break;
                 case OutletInlet:
@@ -280,7 +280,7 @@ void WSEBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
                     faceVel.associatedValue = faceVel.value * factor;
 
                     if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                      printf("FVHM Qin: %f, Vin: %f, EdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,edgeDepth.value);
+                      printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
                   }
                   break;
                 case None:

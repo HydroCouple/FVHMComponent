@@ -117,7 +117,7 @@ void PrecipBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
           {
             TriCV *cv = controlVolumes[cvols[g]];
             double inflowRate = value * cv->area * 2.7777777778e-7;
-            cv->inflow += inflowRate;
+            cv->inflowOutflow += inflowRate;
 
 #ifdef USE_OPENMP
 #pragma omp atomic
@@ -155,7 +155,7 @@ void PrecipBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
           {
             TriCV *cv = controlVolumes[cvols[g]];
             double inflowRate = value * cv->area * 2.7777777778e-7;
-            cv->inflow += inflowRate;
+            cv->inflowOutflow += inflowRate;
 
 #ifdef USE_OPENMP
 #pragma omp atomic

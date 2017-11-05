@@ -76,7 +76,6 @@ void OutletWSESlope::applyBoundaryConditions(double dateTime, double prevTimeSte
       {
         double edgeZ = (slopeValue * cv->r_e_l[face]) + cv->z->value;
         cv->setFaceElevation(face, edgeZ);
-        cv->calculateWSEGradient();
         std::tuple<double, double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,face);
 
         FaceNormVelBC &faceVel = cv->faceNormalVels[face];
@@ -87,7 +86,7 @@ void OutletWSESlope::applyBoundaryConditions(double dateTime, double prevTimeSte
         faceVel.value = 0.0;
         faceVel.associatedValue = 0.0;
 
-        if(faceDepth.value > 1e-4)
+        if(faceDepth.value > 5e-2)
         {
           if(std::get<2>(fv) > 0.0)
           {
@@ -98,12 +97,9 @@ void OutletWSESlope::applyBoundaryConditions(double dateTime, double prevTimeSte
             faceVel.vel->v[1] = std::get<1>(fv);
             faceVel.associatedValue = faceVel.value * factor;
 
-            if(faceDepth.value > 0.8)
-              printf("");
-
             if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
             {
-              printf("FVHM QOut: %f, VOut: %f, EdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceDepth.value);
+              printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], faceDepth.value);
             }
           }
           else
@@ -113,15 +109,17 @@ void OutletWSESlope::applyBoundaryConditions(double dateTime, double prevTimeSte
             faceVel.value = 0.0;
             faceVel.associatedValue = 0.0;
 
-            if(faceDepth.value > 0.8)
-              printf("");
-
             if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
             {
-              printf("FVHM QOut: %f, VOut: %f, EdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceDepth.value);
+              printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], faceDepth.value);
             }
           }
         }
+      }
+      else
+      {
+        double edgeZ =  (slopeValue * cv->r_e_l[face]) + cv->z->value;
+        cv->setFaceElevation(face, edgeZ);
       }
     }
   }

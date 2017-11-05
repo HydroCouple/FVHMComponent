@@ -1,22 +1,22 @@
-/*!
- *  \file    controlvolume.h
- *  \author  Caleb Amoa Buahin <caleb.buahin@gmail.com>
- *  \version 1.0.0.0
- *  \section Description
+/*! \file   controlvolume.h
+ *  \author Caleb Amoa Buahin <caleb.buahin@gmail.com>
+ *  \version   1.0.0.0
+ *  \section   Description
  *  \section License
- *  controlvolume.h, associated files and libraries are free software;
+ *  cvwseoutput.h, associated files and libraries are free software;
  *  you can redistribute it and/or modify it under the terms of the
  *  Lesser GNU General Public License as published by the Free Software Foundation;
  *  either version 3 of the License, or (at your option) any later version.
- *  controlvolume.h its associated files is distributed in the hope that it will be useful,
+ *  The FVHMComponent library and its associated files is distributed in the hope that it will be useful,
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.(see <http://www.gnu.org/licenses/> for details)
  *  \date 2014-2016
  *  \pre
  *  \bug
- *  \todo
  *  \warning
+ *  \todo
  */
+
 #ifndef GEOMDATAOBJECTS_H
 #define GEOMDATAOBJECTS_H
 
@@ -103,7 +103,6 @@ struct FVHMCOMPONENT_EXPORT FaceNormVelBC : public VarBC
 
     Vect *vel = nullptr;
 
-
     FaceNormVelBC():
       VarBC()
     {
@@ -137,6 +136,8 @@ struct FVHMCOMPONENT_EXPORT TriCV
 
     static int numEdges;
 
+    int totalnTris = 0;
+
     //Neighbouring triangles
     int *nTris = nullptr;
 
@@ -149,6 +150,8 @@ struct FVHMCOMPONENT_EXPORT TriCV
     int **nodeTriangleIndexes = nullptr;
 
     double **nodeTriangleDistances = nullptr;
+
+    //    Vect **nodeTriangleDistancesV = nullptr;
 
     HCTriangle *cell = nullptr;
 
@@ -172,7 +175,9 @@ struct FVHMCOMPONENT_EXPORT TriCV
 
     VectBC *grad_z = nullptr;
 
-    //    Vect *grad_z_corr = nullptr;
+    VectBC *grad_h = nullptr;
+
+    //    VectBC *grad_zcorr = nullptr;
 
     VectBC *grad_vel = nullptr;
 
@@ -198,11 +203,13 @@ struct FVHMCOMPONENT_EXPORT TriCV
     //Vector distances from edge centers to this cells centroid.
     Vect *r_e =  nullptr;
 
+    Vect *r_e_cvn = nullptr;
+
     //distance to edge centroid
     double *r_e_l = nullptr;
 
     //normal distance from center of cell to  wall
-    Vect *r_e_l_p = nullptr;
+    double *r_e_l_p = nullptr;
 
     //Distances from cell nodes to this cells centroid
     Vect *r_n = nullptr;
@@ -224,15 +231,6 @@ struct FVHMCOMPONENT_EXPORT TriCV
 
     //inverse weighted length to adjancent cell with distances calculated from shared edge centroids.
     double *w_l = nullptr;
-
-    //Interp factor
-    double *cx  = nullptr;
-
-    //coeff
-    //    double *nACoeff = nullptr;
-
-    //nodal gradz
-    //    Vect *nGrad_z = nullptr;
 
     //Edge normal velocities
     FaceNormVelBC *faceNormalVels = nullptr;
@@ -271,12 +269,8 @@ struct FVHMCOMPONENT_EXPORT TriCV
     //Cross diffusion const term
     double *cross_diff_term = nullptr;
 
-    Vect *r_p_corr = nullptr;
-
-    Vect *r_n_corr = nullptr;
-
     //Inflow boundary conditions
-    double inflow = 0;
+    double inflowOutflow = 0;
 
     //External force
     Vect *externalForce = nullptr;
@@ -323,17 +317,11 @@ struct FVHMCOMPONENT_EXPORT TriCV
 
     double totalExternalOutflow = 0.0;
 
-    bool isPartiallyWetted = false;
-
-    //    VarBC *tracers = 0;
-
-    //    VectBC **tracerGrads = nullptr;
-
-    //    VarBC *tracerRates = nullptr;
-
     int fillMode;
 
     static int gradientCalcMode;
+
+    int isWetOrHasWetNeigh = 0;
 
   public:
 
@@ -355,17 +343,13 @@ struct FVHMCOMPONENT_EXPORT TriCV
 
     void setFaceElevation(int face, double elevation);
 
-    void interpolateNodeElevFromNeighbors();
-
-    void interpolateNodeElevFromNeighbors(int nodeIndex);
-
     void calculateWSEGradient();
 
-    void calculateZCorrectionGradients();
+    void calculateDepthGradient();
+
+    void calculateZCorrGradient();
 
     void calculateNodeElevations();
-
-    void interpolateNodeVelocities();
 
     void calculateVelocityGradient();
 
@@ -389,7 +373,7 @@ struct FVHMCOMPONENT_EXPORT TriCV
 
     static bool intersectPoint(const Vect& v1, const Vect &v2, const Vect &v3, const Vect &v4, Vect &p);
 
-    static void lsGradReconstruction(double value, const Vect distances[], const double values[], int rowCount, double output[]);
+    static void lsGradReconstruction(double value, Vect *distances[], const double values[], int rowCount, double output[]);
 
     static void transpose(int m, int n, double* a, double *a_t);
 
@@ -401,6 +385,11 @@ struct FVHMCOMPONENT_EXPORT TriCV
 
     static void crossProduct(double u[], double v[], double out[]);
 
+    void printDetails();
+
+  private:
+
+    void calculateInitialWSEGradient();
 };
 
 #endif // GEOMDATAOBJECTS_H

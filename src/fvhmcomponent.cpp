@@ -39,13 +39,6 @@
 
 #include "netcdf"
 
-#ifdef USE_OPENMP
-#include <omp.h>
-#endif
-
-#ifdef USE_MPI
-#include <mpi.h>
-#endif
 
 #include "HYPRE.h"
 #include "HYPRE_utilities.h"
@@ -68,22 +61,39 @@ FVHMComponent::FVHMComponent(const QString &id, FVHMComponentInfo* componentInfo
   :AbstractModelComponent(id,componentInfo),
     m_TINMeshArgument(nullptr)
 {
+
+  performStep = &FVHMComponent::performSimpleTimeStep;
   m_epsilon = std::numeric_limits<double>::epsilon();
   m_octree = new Octree(Octree::Octree2D, Octree::AlongEnvelopes,10,1000);
   createDimensions();
   createArguments();
   createAdaptedOutputFactories();
+
+#ifdef USE_MPI
+  MPI_Comm_group(MPI_COMM_WORLD, &m_worldGroup);
+  int worldGroupSize = 0;
+  MPI_Group_size(m_worldGroup, &worldGroupSize);
+  printf("World Group Size: %i\n", worldGroupSize);
+#endif
 }
 
 FVHMComponent::FVHMComponent(const QString &id, const QString &caption, FVHMComponentInfo* componentInfo)
   :AbstractModelComponent(id, caption, componentInfo),
     m_TINMeshArgument(nullptr)
 {
+  performStep = &FVHMComponent::performSimpleTimeStep;
   m_epsilon = std::numeric_limits<double>::epsilon();
   m_octree = new Octree(Octree::Octree2D, Octree::AlongEnvelopes,10,1000);
   createDimensions();
   createArguments();
   createAdaptedOutputFactories();
+
+#ifdef USE_MPI
+  MPI_Comm_group(MPI_COMM_WORLD, &m_worldGroup);
+  int worldGroupSize = 0;
+  MPI_Group_size(m_worldGroup, &worldGroupSize);
+  printf("World Group Size: %i\n", worldGroupSize);
+#endif
 }
 
 FVHMComponent::~FVHMComponent()
@@ -93,9 +103,16 @@ FVHMComponent::~FVHMComponent()
 
   if(m_outputNetCDF)
   {
+    m_outputNetCDF->sync();
+    m_outputNetCDF->close();
     delete m_outputNetCDF;
     m_outputNetCDF = nullptr;
   }
+
+#ifdef USE_MPI
+  MPI_Group_free(&m_worldGroup);
+#endif
+
 }
 
 QList<QString> FVHMComponent::validate()
@@ -113,135 +130,79 @@ void FVHMComponent::prepare()
 {
   if(!isPrepared())
   {
+
     m_timeStepCount = 0;
     m_convergedCount = 0;
 
-    initializeAdaptedOutputs();
+    if(mpiProcessRank() == 0)
+    {
+      initializeAdaptedOutputs();
 
-    applyInitialBoundaryConditions();
+      applyInitialBoundaryConditions();
 
-    updateOutputValues(QList<HydroCouple::IOutput*>());
+      applyBoundaryConditions(m_startDateTime);
 
-    writeOutputs();
-    m_nextOutputTime = m_nextOutputTime + (m_outputTimeStep / 1440.00);
+      updateOutputValues(QList<HydroCouple::IOutput*>());
+
+      writeOutputs();
+      m_nextOutputTime = m_nextOutputTime + (m_outputTimeStep / 1440.00);
+
+      m_initTimeStepCycle = 0;
+      m_printFrequencyCounter = 0;
+    }
 
     setPrepared(true);
     setStatus(IModelComponent::Updated,"");
-    m_initTimeStepCycle = 0;
-    m_printFrequencyCounter = 0;
   }
 }
 
 void FVHMComponent::update(const QList<HydroCouple::IOutput*> &requiredOutputs)
 {
-  if(status() == IModelComponent::Updated)
+  if(mpiProcessRank() == 0)
   {
-    setStatus(IModelComponent::Updating);
-
-    m_printFrequencyCounter++;
-
-    //get minimum time being requested from outputs
-    double outputDataItemsMinTime = getMinOutputTime(requiredOutputs);
-
-    //check if iteration or move to next time step
-    bool moveToNextTimeStep = outputDataItemsMinTime <= m_currentDateTime &&
-                              m_currentDateTime != m_startDateTime ? false : true;
-
-    if(moveToNextTimeStep)
+    if(status() == IModelComponent::Updated)
     {
-      //calculate next time step;
-      m_timeStep = getNextTimeStep();
+      setStatus(IModelComponent::Updating);
 
-      //update current date time
-      m_currentDateTime = m_currentDateTime + m_timeStep / 86400.0 ;
+      m_printFrequencyCounter++;
 
-      m_timeStepCount++;
-    }
-    //or perform iteration
-    else
-    {
-      moveToNextTimeStep = false;
-    }
+      //get minimum time being requested from outputs
+      double outputDataItemsMinTime = getMinOutputTime(requiredOutputs);
 
+      //check if iteration or move to next time step
+      bool moveToNextTimeStep = outputDataItemsMinTime <= m_currentDateTime &&
+                                m_currentDateTime != m_startDateTime ? false : true;
 
-    m_qtDateTime = SDKTemporal::DateTime(m_currentDateTime).dateTime();
-
-    //apply boundary conditions for  next next timestep/current if iteration
-    applyBoundaryConditions(m_currentDateTime);
-
-    //retrive input boundary conditions from exchangedItems overrides internal boundaries
-    applyInputValues();
-
-    //performtimeStep
-    int iterations = 0;
-    int numWetCells = 0;
-
-    QString message = "";
-
-    //residuals
-    double uvelRelResidualNormFin = 0.0, vvelRelResidualNormFin = 0.0,
-        pressureRelRisdualNormFin = 0.0, continuityRelResidualNormFin = 0.0,
-        uvelRelResidualNormInit = 0.0, vvelRelResidualNormInit = 0.0,
-        pressureRelRisdualNormInit = 0.0, continuityRelResidualNormInit = 0.0;
-
-    bool converged = false;
-
-    ErrorCode error = ErrorCode::NoError;
-
-    switch (m_pressureVelocityCouplingType)
-    {
-      case 1:
-        {
-          error = performSimpleCTimeStep(m_timeStep, iterations, numWetCells,
-                                         uvelRelResidualNormInit, uvelRelResidualNormFin,
-                                         vvelRelResidualNormInit, vvelRelResidualNormFin,
-                                         pressureRelRisdualNormInit, pressureRelRisdualNormFin,
-                                         continuityRelResidualNormInit, continuityRelResidualNormFin,
-                                         converged, message);
-        }
-        break;
-      case 2:
-        {
-          error = performPISOTimeStep(m_timeStep, iterations, numWetCells,
-                                      uvelRelResidualNormInit, uvelRelResidualNormFin,
-                                      vvelRelResidualNormInit, vvelRelResidualNormFin,
-                                      pressureRelRisdualNormInit, pressureRelRisdualNormFin,
-                                      continuityRelResidualNormInit, continuityRelResidualNormFin,
-                                      converged, message);
-        }
-        break;
-      default:
-        {
-          error = performSimpleTimeStep(m_timeStep,iterations, numWetCells,
-                                        uvelRelResidualNormInit, uvelRelResidualNormFin,
-                                        vvelRelResidualNormInit, vvelRelResidualNormFin,
-                                        pressureRelRisdualNormInit, pressureRelRisdualNormFin,
-                                        continuityRelResidualNormInit, continuityRelResidualNormFin,
-                                        converged, message);
-        }
-        break;
-    }
-
-    if(m_printFrequencyCounter >= m_printFrequency)
-    {
-      if(m_verbose)
+      if(moveToNextTimeStep)
       {
-        printf("Residuals\n");
-        printf("dt: %s, ts: %f, u_i: %e, u_f: %e, v_i: %e, v_f: %e, "
-               "c_i: %e, c_f: %e, p_i: %e, p_f: %e, its: %i/%i, conv?: %s, activecells: %i/%i\n",
-               qPrintable(m_qtDateTime.toString(Qt::ISODate)),
-               m_timeStep, uvelRelResidualNormInit, uvelRelResidualNormFin, vvelRelResidualNormInit, vvelRelResidualNormFin,
-               continuityRelResidualNormInit, continuityRelResidualNormFin, pressureRelRisdualNormInit, pressureRelRisdualNormFin,
-               iterations, m_itersPerTimeStep, converged ? "True" : "False" , numWetCells, m_numCells);
+        //calculate next time step;
+        m_timeStep = getNextTimeStep();
+
+        //update current date time
+        m_currentDateTime = m_currentDateTime + m_timeStep / 86400.0 ;
+
+        m_timeStepCount++;
+
+        //apply new boundary conditions for  next next timestep/current if iteration
+        applyBoundaryConditions(m_currentDateTime);
+
+
+      }
+      //or perform iteration
+      else
+      {
+        moveToNextTimeStep = false;
       }
 
-      m_printFrequencyCounter = 0;
-    }
+
+      m_qtDateTime = SDKTemporal::DateTime(m_currentDateTime).dateTime();
+
+      //retrive input boundary conditions from exchangedItems overrides internal boundaries
+      applyInputValues();
+
+      setWetAndContCells();
 
 
-    //copy new values to previous
-    if(moveToNextTimeStep)
-    {
 #ifdef USE_OPENMP
 #pragma omp parallel sections
 #endif
@@ -251,101 +212,282 @@ void FVHMComponent::update(const QList<HydroCouple::IOutput*> &requiredOutputs)
 #pragma omp section
 #endif
         {
-          prepareForNextTimeStep();
+          calculateCellWSEGradients();
         }
 
 #ifdef USE_OPENMP
 #pragma omp section
 #endif
         {
-          updateExternalInflowOutflowTotals(m_timeStep);
+          calculateCellVelocityGradients();
+          calculateCellEddyViscosities();
         }
       }
-    }
 
-    switch (error)
-    {
-      case ErrorCode::SolverFailedToConverge:
-        {
-          //setStatus(HydroCouple::Updated , "FVHM simulation with component id " + id() + " solver failed to converge!", (int)((m_currentDateTime - m_startDateTime) * 100.0 /(m_endDateTime - m_startDateTime)));
-        }
-        break;
-      case ErrorCode::FailedToConverge:
-        {
-          printf("Residuals\n");
-          printf("dt: %s, ts: %f, u_i: %e, u_f: %e, v_i: %e, v_f: %e, "
-                 "c_i: %e, c_f: %e, p_i: %e, p_f: %e, its: %i/%i, conv?: %s, activecells: %i/%i\n",
-                 qPrintable(m_qtDateTime.toString(Qt::ISODate)),
-                 m_timeStep, uvelRelResidualNormInit, uvelRelResidualNormFin, vvelRelResidualNormInit, vvelRelResidualNormFin,
-                 continuityRelResidualNormInit, continuityRelResidualNormFin, pressureRelRisdualNormInit, pressureRelRisdualNormFin,
-                 iterations, m_itersPerTimeStep, converged ? "True" : "False" , numWetCells, m_numCells);
+      //performtimeStep
+      int iterations = 0;
 
-          setStatus(IModelComponent::Updated , "Did not converge for current time step.", (int)((m_currentDateTime - m_startDateTime) * 100.0 /(m_endDateTime - m_startDateTime)));
-        }
-        break;
-      case ErrorCode::CriticalFailure:
-        {
-          printf("Residuals\n");
-          printf("dt: %s, ts: %f, u_i: %e, u_f: %e, v_i: %e, v_f: %e, "
-                 "c_i: %e, c_f: %e, p_i: %e, p_f: %e, its: %i/%i, conv?: %s, activecells: %i/%i\n",
-                 qPrintable(m_qtDateTime.toString(Qt::ISODate)),
-                 m_timeStep, uvelRelResidualNormInit, uvelRelResidualNormFin, vvelRelResidualNormInit, vvelRelResidualNormFin,
-                 continuityRelResidualNormInit, continuityRelResidualNormFin, pressureRelRisdualNormInit, pressureRelRisdualNormFin,
-                 iterations, m_itersPerTimeStep, converged ? "True" : "False" , numWetCells, m_numCells);
+      QString message = "";
 
-          setStatus(IModelComponent::Failed , "Critical failure. Try smaller timestep or relaxation factors.", (int)((m_currentDateTime - m_startDateTime) * 100.0 /(m_endDateTime - m_startDateTime)));
-          return;
-        }
-      case ErrorCode::NoError:
+      //residuals
+      double uvelRelResidualNormFin = 0.0, vvelRelResidualNormFin = 0.0,
+          pressureRelRisdualNormFin = 0.0, continuityRelResidualNormFin = 0.0,
+          uvelRelResidualNormInit = 0.0, vvelRelResidualNormInit = 0.0,
+          pressureRelRisdualNormInit = 0.0, continuityRelResidualNormInit = 0.0;
+
+      int aveNumUVelSolvIters = 0, aveNumVVelSolvIters = 0, aveNumPressSolvIters = 0;
+
+      bool converged = false;
+
+      int error = ErrorCode::NoError;
+
+
+      error = (this->*performStep) (m_timeStep, iterations,
+                                    uvelRelResidualNormInit, uvelRelResidualNormFin, aveNumUVelSolvIters,
+                                    vvelRelResidualNormInit, vvelRelResidualNormFin, aveNumVVelSolvIters,
+                                    pressureRelRisdualNormInit, pressureRelRisdualNormFin, aveNumPressSolvIters,
+                                    continuityRelResidualNormInit, continuityRelResidualNormFin,
+                                    converged, message);
+
+
+      if(m_printFrequencyCounter >= m_printFrequency)
+      {
+        if(m_verbose)
         {
-          if(moveToNextTimeStep)
+          printf("\nResiduals\n");
+          printf("dt: %s, dt: %f, ts: %f, u_i: %e, u_f: %e, u_ave_iters: %i, v_i: %e, v_f: %e, v_ave_iters: %i, "
+                 "c_i: %e, c_f: %e, p_i: %e, p_f: %e, p_ave_iters: %i, its: %i/%i, conv?: %s, mom_cells: %i/%i, cont_cells: %i/%i\n",
+                 qPrintable(m_qtDateTime.toString(Qt::ISODate)), m_currentDateTime,
+                 m_timeStep, uvelRelResidualNormInit, uvelRelResidualNormFin, aveNumUVelSolvIters,
+                 vvelRelResidualNormInit, vvelRelResidualNormFin, aveNumVVelSolvIters,
+                 continuityRelResidualNormInit, continuityRelResidualNormFin, pressureRelRisdualNormInit,
+                 pressureRelRisdualNormFin, aveNumPressSolvIters,
+                 iterations, m_itersPerTimeStep, converged ? "true" : "false" , m_numWetCells, m_numCells, m_numContCells, m_numCells);
+        }
+
+        m_printFrequencyCounter = 0;
+      }
+
+      //copy new values to previous
+      if(moveToNextTimeStep)
+      {
+#ifdef USE_OPENMP
+#pragma omp parallel sections
+#endif
+        {
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
           {
-            m_convergedCount++;
+            prepareForNextTimeStep();
+          }
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+          {
+            updateExternalInflowOutflowTotals(m_timeStep);
           }
         }
-        break;
+      }
+
+      switch (error)
+      {
+        case ErrorCode::SolverFailedToConverge:
+          {
+            printf("\nResiduals\n");
+            printf("dt: %s, dt: %f, ts: %f, u_i: %e, u_f: %e, v_i: %e, v_f: %e, "
+                   "c_i: %e, c_f: %e, p_i: %e, p_f: %e, its: %i/%i, conv?: %s, mom_cells: %i/%i, cont_cells: %i/%i\n",
+                   qPrintable(m_qtDateTime.toString(Qt::ISODate)), m_currentDateTime,
+                   m_timeStep, uvelRelResidualNormInit, uvelRelResidualNormFin, vvelRelResidualNormInit, vvelRelResidualNormFin,
+                   continuityRelResidualNormInit, continuityRelResidualNormFin, pressureRelRisdualNormInit, pressureRelRisdualNormFin,
+                   iterations, m_itersPerTimeStep, converged ? "true" : "false" , m_numWetCells, m_numCells, m_numContCells, m_numCells);
+
+            setStatus(IModelComponent::Updated , "FVHM simulation with component id " + id() + " solver failed to converge!", (int)((m_currentDateTime - m_startDateTime) * 100.0 /(m_endDateTime - m_startDateTime)));
+          }
+          break;
+        case ErrorCode::FailedToConverge:
+          {
+            printf("\nResiduals\n");
+            printf("dt: %s, dt: %f, ts: %f, u_i: %e, u_f: %e, v_i: %e, v_f: %e, "
+                   "c_i: %e, c_f: %e, p_i: %e, p_f: %e, its: %i/%i, conv?: %s, mom_cells: %i/%i, cont_cells: %i/%i\n",
+                   qPrintable(m_qtDateTime.toString(Qt::ISODate)), m_currentDateTime,
+                   m_timeStep, uvelRelResidualNormInit, uvelRelResidualNormFin, vvelRelResidualNormInit, vvelRelResidualNormFin,
+                   continuityRelResidualNormInit, continuityRelResidualNormFin, pressureRelRisdualNormInit, pressureRelRisdualNormFin,
+                   iterations, m_itersPerTimeStep, converged ? "true" : "false" , m_numWetCells, m_numCells, m_numContCells, m_numCells);
+
+            setStatus(IModelComponent::Updated , "Did not converge for current time step.", (int)((m_currentDateTime - m_startDateTime) * 100.0 /(m_endDateTime - m_startDateTime)));
+          }
+          break;
+        case ErrorCode::CriticalFailure:
+          {
+            printf("\nResiduals\n");
+            printf("dt: %s, dt: %f, ts: %f, u_i: %e, u_f: %e, v_i: %e, v_f: %e, "
+                   "c_i: %e, c_f: %e, p_i: %e, p_f: %e, its: %i/%i, conv?: %s, mom_cells: %i/%i, cont_cells: %i/%i\n",
+                   qPrintable(m_qtDateTime.toString(Qt::ISODate)), m_currentDateTime,
+                   m_timeStep, uvelRelResidualNormInit, uvelRelResidualNormFin, vvelRelResidualNormInit, vvelRelResidualNormFin,
+                   continuityRelResidualNormInit, continuityRelResidualNormFin, pressureRelRisdualNormInit, pressureRelRisdualNormFin,
+                   iterations, m_itersPerTimeStep, converged ? "true" : "false" , m_numWetCells, m_numCells, m_numContCells, m_numCells);
+
+            setStatus(IModelComponent::Failed , "Critical failure. Try smaller timestep or relaxation factors.", (int)((m_currentDateTime - m_startDateTime) * 100.0 /(m_endDateTime - m_startDateTime)));
+            return;
+          }
+        case ErrorCode::NoError:
+          {
+            if(moveToNextTimeStep)
+            {
+              m_convergedCount++;
+            }
+          }
+          break;
+      }
+
+      //logging
+      {
+        writeToLogFile(iterations,
+                       uvelRelResidualNormInit,uvelRelResidualNormFin,
+                       vvelRelResidualNormInit,vvelRelResidualNormFin,
+                       continuityRelResidualNormInit,continuityRelResidualNormFin,
+                       pressureRelRisdualNormInit,pressureRelRisdualNormFin);
+      }
+
+      updateOutputValues(QList<IOutput*>({}));
+
+      //write outputs
+      if(m_currentDateTime != m_previouslyWrittenDateTime && m_currentDateTime >= m_nextOutputTime)
+      {
+        m_previouslyWrittenDateTime = m_currentDateTime;
+        setStatus(IModelComponent::Updating, "Writing output for " + m_qtDateTime.toString(Qt::ISODate) + " ...", progressChecker()->progress());
+
+        writeOutputs();
+
+        m_nextOutputTime = m_nextOutputTime + m_outputTimeStep / 1440.00;
+      }
+
+
+      //check if simulation has been completed
+      if(m_currentDateTime >=  m_endDateTime)
+      {
+        setStatus(IModelComponent::Done , "Simulation Finished successfully!",100);
+      }
+      else if(progressChecker()->performStep(m_currentDateTime))
+      {
+        setStatus(IModelComponent::Updated, "Current DateTime: " + m_qtDateTime.toString(Qt::ISODate), progressChecker()->progress());
+      }
+      else
+      {
+        setStatus(IModelComponent::Updated);
+      }
     }
-
-    //logging
+  }
+#ifdef USE_MPI
+  else
+  {
+    if(status() == IModelComponent::Updated)
     {
-      writeToLogFile(iterations,
-                     uvelRelResidualNormInit,uvelRelResidualNormFin,
-                     vvelRelResidualNormInit,vvelRelResidualNormFin,
-                     continuityRelResidualNormInit,continuityRelResidualNormFin,
-                     pressureRelRisdualNormInit,pressureRelRisdualNormFin);
-    }
+      setStatus(IModelComponent::Updating);
 
-    updateOutputValues(QList<IOutput*>({}));
+      MPI_Status status;
+      int result = 0;
 
-    //write outputs
-    if(m_currentDateTime != m_previouslyWrittenDateTime && m_currentDateTime >= m_nextOutputTime)
-    {
-      m_previouslyWrittenDateTime = m_currentDateTime;
-      //      setStatus(HydroCouple::Updating , "Writing output for " + currDt.toString(Qt::ISODate) + " ...",
-      //                (int)((m_currentDateTime - m_startDateTime) * 100.0 /(m_endDateTime - m_startDateTime)));
+      if((result = MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status)) == MPI_SUCCESS)
+      {
+        switch (status.MPI_TAG)
+        {
+          case InitializeCommunicator:
+            {
+              int dataSize = 0;
+              MPI_Get_count(&status, MPI_INT, &dataSize);
 
-      writeOutputs();
+              if(dataSize)
+              {
 
-      m_nextOutputTime = m_nextOutputTime + (m_outputTimeStep / 1440.00);
+                if(m_mpiResourcesInitialized)
+                {
+                  MPI_Group_free(&m_ComponentMPIGroup);
+                  MPI_Comm_free(&m_ComponentMPIComm);
+                  m_mpiResourcesInitialized = false;
+                }
 
-      //      setStatus(HydroCouple::Updated , "Finished writing output",
-      //                (int)((m_currentDateTime - m_startDateTime) * 100.0 /(m_endDateTime - m_startDateTime)));
-    }
 
-    //check if simulation has been completed
-    if(m_currentDateTime >=  m_endDateTime)
-    {
-      setStatus(IModelComponent::Done , "Simulation Finished successfully!",100);
-    }
-    else if(progressChecker()->performStep(m_currentDateTime))
-    {
-      setStatus(IModelComponent::Updated, "Current DateTime: " + m_qtDateTime.toString(Qt::ISODate), progressChecker()->progress());
-    }
-    else
-    {
+                printf("Preparing MPI Communicator on MPI Processor: %i for Component: %s\n", mpiProcessRank(), qPrintable(id()));
+                int *procs = new int[dataSize];
+                MPI_Recv(procs,dataSize,MPI_INT,status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD,&status);
+
+                MPI_Group_incl(m_worldGroup, dataSize, procs, &m_ComponentMPIGroup);
+                MPI_Comm_create_group(MPI_COMM_WORLD, m_ComponentMPIGroup, 0, &m_ComponentMPIComm);
+                m_mpiResourcesInitialized = true;
+
+                delete[] procs;
+                printf("Finished Preparing MPI Communicator on MPI Processor: %i for Component: %s\n", mpiProcessRank(), qPrintable(id()));
+              }
+            }
+            break;
+          case SolveEquation:
+            {
+
+              int dataSize = 0;
+              MPI_Get_count(&status, MPI_DOUBLE, &dataSize);
+
+              if(dataSize)
+              {
+                double *values = new double[dataSize];
+                MPI_Recv(values, dataSize, MPI_DOUBLE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, &status);
+
+                double *b = nullptr;
+                SparseMatrix *A = nullptr;
+                double *x = nullptr;
+                int counter  = 0;
+                SparseMatrix::deserialize(values, A, b, x, counter);
+
+                int rowCount = A->rowCount();
+                double *residuals = new double[rowCount];
+                double residualNorm = 0;
+                int numIterations = 0;
+                //                printf("Solving on slave\n");
+                int result = solve(m_ComponentMPIComm, *A, A->ilower(), A->iupper(), b, x, residuals, residualNorm, numIterations);
+
+                int size = rowCount * 2 + 2;
+                double* solution = new double[size];
+                solution[0] = result;
+                solution[1] = residualNorm;
+
+#ifdef USE_OPENMP
+#pragma omp parallel for
+#endif
+                for(int i = 0; i < rowCount; i++)
+                {
+                  solution[i + 2] = x[i];
+                }
+
+#ifdef USE_OPENMP
+#pragma omp parallel for
+#endif
+                for(int i = 0; i < rowCount; i++)
+                {
+                  solution[rowCount + 2 + i] = residuals[i];
+                }
+
+                //                printf("Sending solution from slave\n");
+                MPI_Send(&solution[0], size, MPI_DOUBLE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD);
+
+                delete[] values;
+                delete[] x;
+                delete[] residuals;
+                delete[] b;
+                delete[] solution;
+                delete A;
+              }
+            }
+            break;
+        }
+      }
+
       setStatus(IModelComponent::Updated);
     }
   }
+#endif
 }
 
 void FVHMComponent::finish()
@@ -354,17 +496,31 @@ void FVHMComponent::finish()
   {
     setStatus(IModelComponent::Finishing , "");
 
-    if(m_outputNetCDF)
+    if(mpiProcessRank() == 0)
     {
-      delete m_outputNetCDF;
-      m_outputNetCDF = nullptr;
-    }
+      if(m_outputNetCDF)
+      {
+        m_outputNetCDF->sync();
+        m_outputNetCDF->close();
+        delete m_outputNetCDF;
+        m_outputNetCDF = nullptr;
+      }
 
-    closeOutputCSVFile();
-    closeLogFile();
+      closeOutputCSVFile();
+      closeLogFile();
+    }
 
     setPrepared(false);
     setInitialized(false);
+
+#ifdef USE_MPI
+    if(m_mpiResourcesInitialized == true)
+    {
+      MPI_Group_free(&m_ComponentMPIGroup);
+      MPI_Comm_free(&m_ComponentMPIComm);
+      m_mpiResourcesInitialized = false;
+    }
+#endif
 
     setStatus(IModelComponent::Finished , "");
     setStatus(IModelComponent::Created , "");
@@ -471,6 +627,7 @@ void FVHMComponent::createTimeArguments()
   timeStepIdentifiers.append("Min Time Step");
   timeStepIdentifiers.append("Max Time Step");
   timeStepIdentifiers.append("Max Time Step Change Factor");
+  timeStepIdentifiers.append("Max Time Decrease Step Change Factor");
   timeStepIdentifiers.append("Max Courant Number");
   timeStepIdentifiers.append("RMS Courant Number");
   timeStepIdentifiers.append("Time Step Relaxation Factor");
@@ -485,7 +642,8 @@ void FVHMComponent::createTimeArguments()
   (*m_timeStepArguments)["Time Step Mode"] = m_useAdaptiveTimeStep ? (m_adaptiveTSMode == MaxCourantNumber ? 1 : 2) : 0;
   (*m_timeStepArguments)["Min Time Step"] = m_minTimeStep;
   (*m_timeStepArguments)["Max Time Step"] = m_maxTimeStep;
-  (*m_timeStepArguments)["Max Time Step Change Factor"] = m_maxTimeStepCF;
+  (*m_timeStepArguments)["Max Time Step Change Factor"] = m_maxTimeStepIncreaseCF;
+  (*m_timeStepArguments)["Max Time Step Decrease Change Factor"] = m_maxTimeStepDecreaseCF;
   (*m_timeStepArguments)["Max Courant Number"] = m_maxCourantNumber;
   (*m_timeStepArguments)["RMS Courant Number"] = m_RMSCourantNumber;
   (*m_timeStepArguments)["Time Step Relaxation Factor"] = m_timeStepRelaxFactor;
@@ -659,6 +817,7 @@ void FVHMComponent::createWettingAndDryingArguments()
   identifiers.append("Wet Cell Depth");
   identifiers.append("Wet Cell Node Depth");
   identifiers.append("Minimum Viscous Sublayer Depth");
+  identifiers.append("Wet Dry Factor");
 
   Quantity* quantity = Quantity::lengthInMeters(this);
   quantity->setCaption("Wetting and Drying Depths (m)");
@@ -672,6 +831,7 @@ void FVHMComponent::createWettingAndDryingArguments()
   (*m_wettingAndDryingArgument)["Wet Cell Depth"] = m_wetCellDepth;
   (*m_wettingAndDryingArgument)["Wet Cell Node Depth"] = m_wetCellNodeDepth;
   (*m_wettingAndDryingArgument)["Minimum Viscous Sublayer Depth"] = m_viscousSubLayerDepth;
+  (*m_wettingAndDryingArgument)["Wet Dry Factor"] = m_wetDryFactor;
 
   addArgument(m_wettingAndDryingArgument);
 }
@@ -689,7 +849,6 @@ void FVHMComponent::createInitialUniformBCArguments()
   identifiers.append("Min Outlet WSE Slope");
   identifiers.append("Inlet WSEBC Vel Relaxation Factor");
   identifiers.append("Outlet WSEBC Vel Relaxation Factor");
-  identifiers.append("Restart File");
 
   Quantity* quantity = Quantity::unitLessValues("Initial Model Variables",QVariant::Double, this);
   quantity->setDefaultValue(0.0);
@@ -873,6 +1032,8 @@ void FVHMComponent::createMiscOptionsArguments()
   identifiers.append("Print Frequency");
   identifiers.append("Output Write Flush Frequency");
   identifiers.append("Gradient Calculation Mode");
+  identifiers.append("Use Wall Friction");
+  identifiers.append("MPI Solver Split Threshold");
 
   Quantity* quantity = Quantity::unitLessValues("Misc Options Values", QVariant::Double, this);
   quantity->setDefaultValue(0.0);
@@ -886,32 +1047,62 @@ void FVHMComponent::createMiscOptionsArguments()
   (*m_miscOptionsArgument)["Print Frequency"] = m_printFrequency;
   (*m_miscOptionsArgument)["Output Write Flush Frequency"] = m_writeFrequency;
   (*m_miscOptionsArgument)["Gradient Calculation Mode"] = TriCV::gradientCalcMode;
+  (*m_miscOptionsArgument)["Use Wall Friction"] = m_useWall;
+  (*m_miscOptionsArgument)["MPI Solver Split Threshold"] = m_mpiSolverSplitThreshold;
 
   addArgument(m_miscOptionsArgument);
 }
 
 bool FVHMComponent::initializeArguments(QString &message)
 {
-  bool initialized = initializeWettingAndDryingArguments(message) &&
-                     initializeMeshArguments(message) &&
-                     initializeInitialUniformBCArguments(message) &&
-                     initializeTimeArguments(message) &&
-                     initializeOutputFilesArguments(message) &&
-                     initializeEdgeFluxesIOArguments(message) &&
-                     initializeConvergenceArguments(message) &&
-                     initializeSolverOptionsArguments(message) &&
-                     initializePressureVelCouplingArguments(message) &&
-                     initializeInletOutletFlowBCArguments(message) &&
-                     initializeSourceSinkFlowsBCArguments(message) &&
-                     initializeWSEBCArguments(message) &&
-                     initializeCriticalDepthOutflowBCArguments(message) &&
-                     initializeInitialWSEBCArguments(message) &&
-                     initializeWSESlopeBCArguments(message) &&
-                     initializePrecipitationArguments(message) &&
-                     initializeAdvectionDiffusionSchemeArguments(message) &&
-                     initializeMiscOptionsArguments(message);
+  if(mpiProcessRank() == 0)
+  {
+    bool initialized = initializeWettingAndDryingArguments(message) &&
+                       initializeMeshArguments(message) &&
+                       initializeInitialUniformBCArguments(message) &&
+                       initializeTimeArguments(message) &&
+                       initializeOutputFilesArguments(message) &&
+                       initializeEdgeFluxesIOArguments(message) &&
+                       initializeConvergenceArguments(message) &&
+                       initializeSolverOptionsArguments(message) &&
+                       initializePressureVelCouplingArguments(message) &&
+                       initializeInletOutletFlowBCArguments(message) &&
+                       initializeSourceSinkFlowsBCArguments(message) &&
+                       initializeWSEBCArguments(message) &&
+                       initializeCriticalDepthOutflowBCArguments(message) &&
+                       initializeInitialWSEBCArguments(message) &&
+                       initializeWSESlopeBCArguments(message) &&
+                       initializePrecipitationArguments(message) &&
+                       initializeAdvectionDiffusionSchemeArguments(message) &&
+                       initializeMiscOptionsArguments(message) &&
+                       initializeMPIResources(message);
 
-  return initialized;
+    return initialized;
+  }
+  else
+  {
+    bool initialized = initializeWettingAndDryingArguments(message) &&
+                       //                       initializeMeshArguments(message) &&
+                       //                       initializeInitialUniformBCArguments(message) &&
+                       //                       initializeTimeArguments(message) &&
+                       initializeOutputFilesArguments(message) &&
+                       //                       initializeEdgeFluxesIOArguments(message) &&
+                       initializeConvergenceArguments(message) &&
+                       initializeSolverOptionsArguments(message) &&
+                       initializePressureVelCouplingArguments(message) &&
+                       //                       initializeInletOutletFlowBCArguments(message) &&
+                       //                       initializeSourceSinkFlowsBCArguments(message) &&
+                       //                       initializeWSEBCArguments(message) &&
+                       //                       initializeCriticalDepthOutflowBCArguments(message) &&
+                       //                       initializeInitialWSEBCArguments(message) &&
+                       //                       initializeWSESlopeBCArguments(message) &&
+                       //                       initializePrecipitationArguments(message) &&
+                       //                       initializeAdvectionDiffusionSchemeArguments(message) &&
+                       initializeMPIResources(message) &&
+                       initializeMiscOptionsArguments(message) ;
+
+    return initialized;
+  }
 }
 
 bool FVHMComponent::initializeMeshArguments(QString &message)
@@ -919,12 +1110,15 @@ bool FVHMComponent::initializeMeshArguments(QString &message)
   deleteControlVolumes();
 
   m_sharedTriangles.clear();
-
+  m_wetCells.clear();
+  m_contCells.clear();
 
   if(m_TINMeshArgument->TINInternal() != nullptr)
   {
     if((m_numCells = m_TINMeshArgument->TINInternal()->patchCount()))
     {
+      m_wetCells.reserve(m_numCells);
+      m_contCells.reserve(m_numCells);
       m_controlVolumes = std::vector<TriCV*>(m_numCells);
 
       for(int i = 0; i < m_numCells ; i++)
@@ -990,10 +1184,15 @@ bool FVHMComponent::initializeTimeArguments(QString &message)
     return false;
   }
 
-  m_maxTimeStepCF = (*m_timeStepArguments)["Max Time Step Change Factor"];
+  m_maxTimeStepIncreaseCF = (*m_timeStepArguments)["Max Time Step Change Factor"];
 
-  if(m_maxTimeStepCF < 0)
-    m_maxTimeStepCF = 0.05;
+  if(m_maxTimeStepIncreaseCF < 0)
+    m_maxTimeStepIncreaseCF = 0.05;
+
+  m_maxTimeStepDecreaseCF = (*m_timeStepArguments)["Max Time Step Decrease Change Factor"];
+
+  if(m_maxTimeStepDecreaseCF < 0)
+    m_maxTimeStepDecreaseCF = 0.1;
 
   m_outputTimeStep = (*m_timeStepArguments)["Output Time Step"];
   m_previouslyWrittenDateTime = m_currentDateTime;
@@ -1021,6 +1220,10 @@ bool FVHMComponent::initializeTimeArguments(QString &message)
         m_useAdaptiveTimeStep = true;
         m_adaptiveTSMode = AdaptiveTSMode::MaxCourantNumber;
         m_maxCourantNumber = (*m_timeStepArguments)["Max Courant Number"];
+
+        if(m_maxCourantNumber < 0.0)
+          m_maxCourantNumber = 1.0;
+
       }
       break;
     case 2:
@@ -1028,6 +1231,9 @@ bool FVHMComponent::initializeTimeArguments(QString &message)
         m_useAdaptiveTimeStep = true;
         m_adaptiveTSMode = AdaptiveTSMode::RMSCourantNumber;
         m_RMSCourantNumber = (*m_timeStepArguments)["RMS Courant Number"];
+
+        if(m_RMSCourantNumber < 0.0)
+          m_RMSCourantNumber = 1.0;
       }
       break;
     default:
@@ -1078,6 +1284,26 @@ bool FVHMComponent::initializePressureVelCouplingArguments(QString &message)
   }
 
   m_pressureVelocityCouplingType = (*m_pressureVelCouplingArguments)["Coupling Type"];
+
+  switch (m_pressureVelocityCouplingType)
+  {
+    case 1:
+      {
+        performStep = &FVHMComponent::performSimpleCTimeStep;
+      }
+      break;
+    case 2:
+      {
+        performStep = &FVHMComponent::performPISOTimeStep;
+      }
+      break;
+    default:
+      {
+        performStep = &FVHMComponent::performSimpleTimeStep;
+      }
+      break;
+  }
+
 
   m_pressureRelaxFactor = (*m_pressureVelCouplingArguments)["Pressure Relaxation Factor"];
 
@@ -1279,6 +1505,10 @@ bool FVHMComponent::initializeWettingAndDryingArguments(QString &message)
   m_wetCellDepth = (*m_wettingAndDryingArgument)["Wet Cell Depth"];
   m_wetCellNodeDepth = (*m_wettingAndDryingArgument)["Wet Cell Node Depth"];
   m_viscousSubLayerDepth = (*m_wettingAndDryingArgument)["Minimum Viscous Sublayer Depth"];
+  m_wetDryFactor = (*m_wettingAndDryingArgument)["Wet Dry Factor"];
+
+  if(m_wetDryFactor < 0 || m_wetDryFactor >= 1.0)
+    m_wetDryFactor = 0.025;
 
   return true;
 }
@@ -1303,6 +1533,10 @@ bool FVHMComponent::initializeMiscOptionsArguments(QString &message)
 
   m_verbose = (*m_miscOptionsArgument)["Verbose"] ? true : false;
   m_printFrequency = (*m_miscOptionsArgument)["Print Frequency"];
+  m_useWall = (*m_miscOptionsArgument)["Use Wall Friction"];
+
+  if(m_useWall)
+    m_useWall = 1.0;
 
   if(m_printFrequency < 1)
   {
@@ -1326,8 +1560,72 @@ bool FVHMComponent::initializeMiscOptionsArguments(QString &message)
     }
   }
 
+  m_mpiSolverSplitThreshold = (*m_miscOptionsArgument)["MPI Solver Split Threshold"];
+
+  if(m_mpiSolverSplitThreshold < 100)
+    m_mpiSolverSplitThreshold = 100;
+
+  return true;
+}
+
+bool FVHMComponent::initializeMPIResources(QString &message)
+{
 
 
+  message = "";
+
+#ifdef USE_MPI
+
+  if(m_mpiResourcesInitialized)
+  {
+    MPI_Group_free(&m_ComponentMPIGroup);
+    MPI_Comm_free(&m_ComponentMPIComm);
+    m_mpiResourcesInitialized = false;
+  }
+
+  if(mpiProcessRank() == 0)
+  {
+    printf("Preparing MPI Communicator on MPI Processor: %i for Component: %s\n", mpiProcessRank(), qPrintable(id()));
+
+    m_allocatedProcesses.clear();
+    m_allocatedProcesses.push_back(0);
+
+    for(int proc : mpiAllocatedProcesses())
+    {
+      if(proc != 0)
+      {
+        m_allocatedProcesses.push_back(proc);
+      }
+    }
+
+    if(m_allocatedProcesses.size() > 1)
+    {
+      std::sort(m_allocatedProcesses.begin(),m_allocatedProcesses.end());
+
+      //Send message to children
+      for(int proc : m_allocatedProcesses)
+      {
+        if(proc != 0)
+        {
+          MPI_Send(&m_allocatedProcesses[0], m_allocatedProcesses.size(), MPI_INT, proc, InitializeCommunicator, MPI_COMM_WORLD);
+        }
+      }
+
+      MPI_Group_incl(m_worldGroup, m_allocatedProcesses.size(), &m_allocatedProcesses[0], &m_ComponentMPIGroup);
+      MPI_Comm_create_group(MPI_COMM_WORLD, m_ComponentMPIGroup, 0, &m_ComponentMPIComm);
+
+      m_mpiResourcesInitialized = true;
+    }
+    else
+    {
+      m_ComponentMPIComm = MPI_COMM_SELF;
+    }
+  }
+
+#else
+  m_ComponentMPIComm = MPI_COMM_WORLD;
+  m_ComponentMPICommLocal = MPI_COMM_WORLD;
+#endif
 
   return true;
 }

@@ -67,28 +67,24 @@ double FVHMComponent::getNextTimeStep()
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-          for(int i = 0 ; i < m_numCells  ; i++)
+          for(int i = 0 ; i < m_numWetCells  ; i++)
           {
-            TriCV *cv = m_controlVolumes[i];
+            int cvIndex = m_wetCells[i];
+            TriCV *cv = m_controlVolumes[cvIndex];
 
-            if(cv->wetIndex)
+            double cFactor = cv->getCourantFactor();
+
+            if(cFactor > maxCFactor)
             {
-              double cFactor = cv->getCourantFactor();
-
-              if(cFactor > maxCFactor)
-              {
 
 #ifdef USE_OPENMP
-#pragma omp critical
+#pragma omp atomic read
 #endif
-                {
-                  maxCFactor = cFactor;
-                }
-              }
+              maxCFactor = cFactor;
             }
           }
 
-          estimatedTimeStep = maxCFactor ? m_maxCourantNumber * m_timeStepRelaxFactor / maxCFactor : m_maxTimeStep;
+          estimatedTimeStep = maxCFactor ?  m_maxCourantNumber * m_timeStepRelaxFactor / maxCFactor : m_maxTimeStep;
         }
         break;
       case AdaptiveTSMode::RMSCourantNumber:
@@ -96,21 +92,31 @@ double FVHMComponent::getNextTimeStep()
           double count = 0;
           double tStep = 0;
 
-          for(int i = 0 ; i < m_numCells ; i++)
+#ifdef USE_OPENMP
+#pragma omp parallel for
+#endif
+          for(int i = 0 ; i < m_numWetCells ; i++)
           {
-            TriCV *cv = m_controlVolumes[i];
+            int cvIndex = m_wetCells[i];
+            TriCV *cv = m_controlVolumes[cvIndex];
 
-            if(cv->wetIndex )
-            {
-              double cfactor = cv->getCourantFactor();
-              tStep += cfactor * cfactor;
-              count ++;
-            }
+            double cfactor = cv->getCourantFactor();
+
+#ifdef USE_OPENMP
+#pragma omp atomic
+#endif
+            tStep += cfactor * cfactor;
+
+#ifdef USE_OPENMP
+#pragma omp atomic
+#endif
+            count ++;
+
           }
 
-          if(count)
+          if(count && tStep)
           {
-            estimatedTimeStep = m_RMSCourantNumber / sqrt(tStep/count);
+            estimatedTimeStep =  m_RMSCourantNumber * m_timeStepRelaxFactor / sqrt(tStep/count) ;
           }
         }
         break;
@@ -119,9 +125,16 @@ double FVHMComponent::getNextTimeStep()
     double dtStep = estimatedTimeStep - m_timeStep;
     double fract = dtStep / m_timeStep;
 
-    if(dtStep > 0 && fabs(fract) > m_maxTimeStepCF)
+    if(dtStep > 0)
     {
-      estimatedTimeStep = m_timeStep + m_maxTimeStepCF * fract * m_timeStep / fabs(fract);
+      if(fabs(fract) > m_maxTimeStepIncreaseCF)
+      {
+        estimatedTimeStep = m_timeStep + m_maxTimeStepIncreaseCF * fract * m_timeStep / fabs(fract);
+      }
+    }
+    else
+    {
+      m_timeStep = m_timeStep - m_timeStep * m_maxTimeStepDecreaseCF;
     }
   }
 
@@ -154,7 +167,7 @@ void FVHMComponent::applyInitialBoundaryConditions()
   for(int i = 0 ; i < m_numCells ; i++)
   {
     TriCV *cv = m_controlVolumes[i];
-    cv->inflow = 0.0;
+    cv->inflowOutflow = 0.0;
     cv->externalForce->v[0] = 0.0;
     cv->externalForce->v[1] = 0.0;
 
@@ -178,12 +191,6 @@ void FVHMComponent::applyInitialBoundaryConditions()
 
   m_initialWSEBC->applyBoundaryConditions(m_currentDateTime, m_timeStep);
 
-  int numWetCells;
-  getWetCells(numWetCells);
-  calculateCellWSEGradients();
-  calculateCellVelocityGradients();
-  calculateCellEddyViscosities();
-
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
@@ -203,7 +210,7 @@ void FVHMComponent::applyBoundaryConditions(double time)
   for(int i = 0 ; i < m_numCells ; i++)
   {
     TriCV *cv = m_controlVolumes[i];
-    cv->inflow = 0.0;
+    cv->inflowOutflow = 0.0;
     cv->externalForce->v[0] = 0.0;
     cv->externalForce->v[1] = 0.0;
   }
@@ -212,39 +219,45 @@ void FVHMComponent::applyBoundaryConditions(double time)
 #pragma omp parallel sections
 #endif
   {
+
 #ifdef USE_OPENMP
 #pragma omp section
-    {
 #endif
+    {
       m_outletWSEBC->applyBoundaryConditions(time, m_timeStep);
 
       m_outletWSESlope->applyBoundaryConditions(time, m_timeStep);
 
       m_criticalDepthOutflowBC->applyBoundaryConditions(time, m_timeStep);
-
-#ifdef USE_OPENMP
     }
-#endif
 
 #ifdef USE_OPENMP
 #pragma omp section
 #endif
-    m_inletWSEBC->applyBoundaryConditions(time, m_timeStep);
+    {
+      m_inletWSEBC->applyBoundaryConditions(time, m_timeStep);
+    }
 
 #ifdef USE_OPENMP
 #pragma omp section
 #endif
-    m_outletFlowBCArgument->applyBoundaryConditions(time, m_timeStep);
+    {
+      m_outletFlowBCArgument->applyBoundaryConditions(time, m_timeStep);
+    }
 
 #ifdef USE_OPENMP
 #pragma omp section
 #endif
-    m_inletFlowBCArgument->applyBoundaryConditions(time, m_timeStep);
+    {
+      m_inletFlowBCArgument->applyBoundaryConditions(time, m_timeStep);
+    }
 
 #ifdef USE_OPENMP
 #pragma omp section
 #endif
-    m_precipitationArgument->applyBoundaryConditions(time, m_timeStep);
+    {
+      m_precipitationArgument->applyBoundaryConditions(time, m_timeStep);
+    }
   }
 
 }
@@ -308,22 +321,17 @@ void FVHMComponent::prepareForNextTimeStep()
 
     if(m_verbose && m_printFrequencyCounter <= 0)
     {
-#ifdef USE_OPENMP
-#pragma omp critical
-#endif
-      {
-        maxU = max(maxU , cv->vel[0].value);
-        maxV = max(maxV , cv->vel[1].value);
+      maxU = max(maxU , cv->vel[0].value);
+      maxV = max(maxV , cv->vel[1].value);
 
-        minU = min(minU , cv->vel[0].value);
-        minV = min(minV , cv->vel[1].value);
+      minU = min(minU , cv->vel[0].value);
+      minV = min(minV , cv->vel[1].value);
 
-        maxH = max(maxH, cv->h->value);
-        minH = min(minH, cv->h->value);
+      maxH = max(maxH, cv->h->value);
+      minH = min(minH, cv->h->value);
 
-        maxZ = max(maxZ, cv->z->value);
-        minZ = min(minZ, cv->z->value);
-      }
+      maxZ = max(maxZ, cv->z->value);
+      minZ = min(minZ, cv->z->value);
     }
 
     cv->copyVariablesToPrev();
@@ -334,68 +342,112 @@ void FVHMComponent::prepareForNextTimeStep()
 
 }
 
-void FVHMComponent::getWetCells(int &numWetCells)
+void FVHMComponent::setWetAndContCells()
 {
-  numWetCells = 0;
+  m_numWetCells = 0;
+  m_numContCells = 0;
 
   for(int i = 0; i < m_numCells; i++)
   {
     TriCV* cv = m_controlVolumes[i];
+    double coeff = cv->h->value * cv->area / m_timeStep;
+    cv->velCoeffs[0][0] = cv->velCoeffs[1][0] = coeff;
+    cv->isWetOrHasWetNeigh = 0;
+    cv->wetIndex = 0;
+    cv->contIndex = 0;
+    cv->wetCellIndex = -1;
+    cv->contCellIndex = -1;
+    cv->contResidualIter = 0.0;
+    cv->velResidualIter[0] = cv->velResidualIter[1] = 0.0;
+
+    for(int f = 0; f < 2 ; f++)
+    {
+      cv->friction[f] = 0.0;
+
+      for(int i = 0 ; i < cv->numEdges; i++)
+      {
+        cv->wallShearFriction[f][i] = 0.0;
+      }
+    }
 
     if(cv->h->value > m_wetCellDepth)
     {
+      cv->isWetOrHasWetNeigh = 1;
       cv->wetIndex = 1;
-      cv->wetCellIndex = numWetCells;
-      numWetCells++;
+      cv->wetCellIndex = m_numWetCells; m_wetCells[m_numWetCells] = i; m_numWetCells++;
+      cv->contCellIndex = m_numContCells; m_contCells[m_numContCells] = i; m_numContCells++;
     }
     else
     {
-      cv->wetIndex = 0;
-      cv->wetCellIndex = -1;
-
       for(int c = 0 ; c < 2; c++)
       {
         cv->vel[c].value = 0.0;
-        //        cv->grad_vel[c].v[0] = 0.0;
-        //        cv->grad_vel[c].v[1] = 0.0;
         cv->prevIterVel[c] = 0.0;
         cv->velResidualIter[c] = 0.0;
-
       }
 
-      //      cv->grad_z->v[0] = 0.0;
-      //      cv->grad_z->v[1] = 0.0;
+      bool cont = false;
 
-      //      for(int f = 0; f < cv->numEdges; f++)
-      //      {
-      //        FaceNormVelBC &faceVel = cv->faceNormalVels[f];
+      if(cv->inflowOutflow)
+      {
+        cont = true;
+      }
 
-      //        if(faceVel.isBC == false && faceVel.value > 0.0)
-      //        {
-      //          faceVel.value = 0.0;
-      //        }
-      //      }
+      for(int j = 0; j < cv->numEdges; j++)
+      {
+
+        int cvnIndex = cv->nTris[j];
+
+        if(cvnIndex > -1)
+        {
+          TriCV *cvn = m_controlVolumes[cvnIndex];
+
+          if(cvn->h->value > m_wetCellDepth)
+          {
+            cv->isWetOrHasWetNeigh = 2;
+            cont = true;
+          }
+        }
+
+        if(cv->faceNormalVels[j].isBC && cv->faceNormalVels[j].value)
+        {
+          cont = true;
+        }
+      }
+
+      if(cont)
+      {
+        cv->contCellIndex = m_numContCells; m_contCells[m_numContCells] = i; m_numContCells++;
+      }
     }
   }
 }
 
-bool FVHMComponent::hasEdgeFlow(TriCV *cv)
+bool FVHMComponent::neighbourIsWet(TriCV *cv, double wetCellDepth)
 {
-  int cvnIndex = -1;
   for(int i = 0; i < cv->numEdges; i++)
   {
-    if(cv->faceNormalVels[i].value ||  ((cvnIndex = cv->nTris[i]) > -1 && m_controlVolumes[cvnIndex]->wetIndex))
-      return true;
+    int cvIndex = cv->nTris[i];
+
+    if(cvIndex > -1)
+    {
+      TriCV *cvn = m_controlVolumes[cvIndex];
+
+      if(cvn->h->value > wetCellDepth)
+      {
+        return true;
+      }
+    }
   }
 
   return false;
 }
 
 
-FVHMComponent::ErrorCode FVHMComponent::performSimpleTimeStep(double tStep, int &numIterations, int &numWetCells,
-                                                              double &uvelRelResidualNormInit, double &uvelRelResidualNormFin,
-                                                              double &vvelRelResidualNormInit, double &vvelRelResidualNormFin,
-                                                              double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin,
+int FVHMComponent::performSimpleTimeStep(double tStep, int &numIterations,
+                                                              double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
+                                                              double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
+                                                              double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
                                                               double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
                                                               bool &converged, QString &errorMessage)
 {
@@ -406,34 +458,18 @@ FVHMComponent::ErrorCode FVHMComponent::performSimpleTimeStep(double tStep, int 
 
   uvelRelResidualNormFin = vvelRelResidualNormFin = pressureRelRisdualNormFin =
       continuityRelResidualNormFin = uvelRelResidualNormInit = vvelRelResidualNormInit =
-      pressureRelRisdualNormInit = continuityRelResidualNormInit = 0.0;
+      pressureRelRisdualNormInit = continuityRelResidualNormInit = aveNumUVelSolvIters =
+      aveNumVVelSolvIters = aveNumPressSolvIters = 0.0;
 
   converged = false;
 
-  numWetCells = m_numCells;
+  double fractStep = tStep / m_numFractionalSteps;
+  double currentStep = fractStep;
 
-  getWetCells(numWetCells);
+  m_currentCoeff = m_currentCoeff == 0 ? 0 : 0;
 
-#ifdef USE_OPENMP
-#pragma omp parallel sections
-#endif
+  while (numIterations < m_itersPerTimeStep)
   {
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-    calculateFriction(0);
-
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-    calculateFriction(1);
-  }
-
-
-  while(numIterations < m_itersPerTimeStep)
-  {
-
-    m_currentCoeff = m_currentCoeff == 0 ? 0 : 0;
 
     ErrorCode uerror = ErrorCode::NoError;
     ErrorCode verror = ErrorCode::NoError;
@@ -442,67 +478,120 @@ FVHMComponent::ErrorCode FVHMComponent::performSimpleTimeStep(double tStep, int 
     uvelRelResidualNormFin = vvelRelResidualNormFin =
         pressureRelRisdualNormFin = continuityRelResidualNormFin = 0.0;
 
+    int numUVelSolvIters = 0;
+    int numVVelSolvIters = 0;
+    int numPSolvIters  = 0;
 
+    currentStep += fractStep;
+    currentStep = min(currentStep, tStep);
+
+    if (m_numWetCells)
+    {
+
+      //Friction
+      {
 #ifdef USE_OPENMP
 #pragma omp parallel sections
 #endif
-    {
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-      uerror = solveMomentumEquations(tStep, uvelRelResidualNormFin, numWetCells, 0, uErrorMessage);
+        {
 
 #ifdef USE_OPENMP
 #pragma omp section
 #endif
-      verror = solveMomentumEquations(tStep, vvelRelResidualNormFin, numWetCells, 1, vErrorMessage);
-    }
+          {
+            calculateFriction(0);
+          }
 
-    if(uerror == ErrorCode::CriticalFailure)
-    {
-      error = uerror;
-      errorMessage = uErrorMessage;
-      break;
-    }
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+          {
+            calculateFriction(1);
+          }
+        }
+      }
 
-    if(verror == ErrorCode::CriticalFailure)
-    {
-      error = verror;
-      errorMessage = vErrorMessage;
-      break;
+      //Solve Momentum
+      {
+#ifdef USE_OPENMP
+#pragma omp parallel sections
+#endif
+        {
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+          {
+            uerror = solveMomentumEquations(currentStep, 0, uvelRelResidualNormFin, numUVelSolvIters, uErrorMessage);
+          }
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+          {
+            verror = solveMomentumEquations(currentStep, 1, vvelRelResidualNormFin, numVVelSolvIters, vErrorMessage);
+          }
+        }
+
+        if (uerror == ErrorCode::CriticalFailure)
+        {
+          error = uerror;
+          errorMessage = uErrorMessage;
+          break;
+        }
+
+        if (verror == ErrorCode::CriticalFailure)
+        {
+          error = verror;
+          errorMessage = vErrorMessage;
+          break;
+        }
+      }
+
     }
 
     calculateFaceVelocities();
 
-    error = solvePressureCorrection(tStep, pressureRelRisdualNormFin, 0.0, errorMessage);
+    error = solvePressureCorrection(currentStep, pressureRelRisdualNormFin, 0.0, numPSolvIters, errorMessage);
 
-    if(error == ErrorCode::CriticalFailure)
+    aveNumUVelSolvIters += numUVelSolvIters;
+    aveNumVVelSolvIters += numVVelSolvIters;
+    aveNumPressSolvIters += numPSolvIters;
+
+    if (error == ErrorCode::CriticalFailure)
     {
       break;
     }
 
+    //Velocity & Pressure Correction
+    {
 #ifdef USE_OPENMP
 #pragma omp parallel sections
 #endif
-    {
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-      applyPressureCorrections();
+      {
 
 #ifdef USE_OPENMP
 #pragma omp section
 #endif
-      applyVelocityCorrections();
+        {
+          applyPressureCorrections();
+          calculateCellWSEGradients();
+        }
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+        {
+          applyVelocityCorrections();
+          calculateCellVelocityGradients();
+          calculateCellEddyViscosities();
+        }
+      }
     }
 
-    calculateCellWSEGradients();
+    calculateContinuityResiduals(currentStep, continuityRelResidualNormFin);
 
-    calculateFaceVelocities();
-
-    calculateContinuityResiduals(tStep, continuityRelResidualNormFin);
-
-    if(numIterations == 0)
+    if (numIterations == 0)
     {
       uvelRelResidualNormInit = uvelRelResidualNormFin;
       vvelRelResidualNormInit = vvelRelResidualNormFin;
@@ -511,28 +600,29 @@ FVHMComponent::ErrorCode FVHMComponent::performSimpleTimeStep(double tStep, int 
     }
 
     //check for convergence
-    if(uvelRelResidualNormFin < m_uvelConvergenceTol &&
-       vvelRelResidualNormFin < m_vvelConvergenceTol &&
-       fabs(pressureRelRisdualNormFin) < m_pressureConvergenceTol
-       && continuityRelResidualNormFin < m_contConvergenceTol
-       )
     {
-      numIterations++;
-      converged = true;
-      break;
+      if (uvelRelResidualNormFin < m_uvelConvergenceTol &&
+          vvelRelResidualNormFin < m_vvelConvergenceTol &&
+          fabs(pressureRelRisdualNormFin) < m_pressureConvergenceTol &&
+          continuityRelResidualNormFin < m_contConvergenceTol &&
+          currentStep == tStep)
+      {
+        numIterations++;
+        converged = true;
+        break;
+      }
     }
 
-    calculateCellVelocityGradients();
-
-    calculateCellEddyViscosities();
-
     numIterations++;
-
   }
 
-  if(error == ErrorCode::NoError)
+  aveNumUVelSolvIters = aveNumUVelSolvIters / numIterations;
+  aveNumVVelSolvIters = aveNumVVelSolvIters / numIterations;
+  aveNumPressSolvIters = aveNumPressSolvIters / numIterations;
+
+  if (error == ErrorCode::NoError)
   {
-    if(!converged)
+    if (!converged)
     {
       errorMessage = "FVHMComponent Id:" + id() + " failed to converged! at time " + m_currentDateTime;
       error = ErrorCode::FailedToConverge;
@@ -548,116 +638,155 @@ FVHMComponent::ErrorCode FVHMComponent::performSimpleTimeStep(double tStep, int 
 }
 
 
-FVHMComponent::ErrorCode FVHMComponent::performSimpleCTimeStep(double tStep, int &numIterations, int &numWetCells,
-                                                               double &uvelRelResidualNormInit, double &uvelRelResidualNormFin,
-                                                               double &vvelRelResidualNormInit, double &vvelRelResidualNormFin,
-                                                               double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin,
+int FVHMComponent::performSimpleCTimeStep(double tStep, int &numIterations,
+                                                               double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
+                                                               double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
+                                                               double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
                                                                double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
                                                                bool &converged, QString &errorMessage)
 {
+
   ErrorCode error = ErrorCode::NoError;
 
   numIterations = 0;
 
   uvelRelResidualNormFin = vvelRelResidualNormFin = pressureRelRisdualNormFin =
       continuityRelResidualNormFin = uvelRelResidualNormInit = vvelRelResidualNormInit =
-      pressureRelRisdualNormInit = continuityRelResidualNormInit = 0.0;
+      pressureRelRisdualNormInit = continuityRelResidualNormInit = aveNumUVelSolvIters =
+      aveNumVVelSolvIters = aveNumPressSolvIters = 0.0;
 
   converged = false;
 
-  numWetCells = m_numCells;
+  double fractStep = tStep / m_numFractionalSteps;
+  double currentStep = fractStep;
 
-  getWetCells(numWetCells);
+  m_currentCoeff = m_currentCoeff == 0 ? 0 : 0;
 
-
-#ifdef USE_OPENMP
-#pragma omp parallel sections
-#endif
+  while (numIterations < m_itersPerTimeStep)
   {
-
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-    calculateFriction(0);
-
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-    calculateFriction(1);
-  }
-
-
-  while(numIterations < m_itersPerTimeStep)
-  {
-    uvelRelResidualNormFin = vvelRelResidualNormFin = pressureRelRisdualNormFin = continuityRelResidualNormFin = 0.0;
 
     ErrorCode uerror = ErrorCode::NoError;
     ErrorCode verror = ErrorCode::NoError;
     QString uErrorMessage;
     QString vErrorMessage;
+    uvelRelResidualNormFin = vvelRelResidualNormFin =
+        pressureRelRisdualNormFin = continuityRelResidualNormFin = 0.0;
 
+    int numUVelSolvIters = 0;
+    int numVVelSolvIters = 0;
+    int numPSolvIters  = 0;
+
+    currentStep += fractStep;
+    currentStep = min(currentStep, tStep);
+
+    if (m_numWetCells)
+    {
+
+      //Friction
+      {
 #ifdef USE_OPENMP
 #pragma omp parallel sections
 #endif
-    {
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-      uerror = solveMomentumEquations(tStep, uvelRelResidualNormFin, numWetCells, 0, uErrorMessage);
+        {
 
 #ifdef USE_OPENMP
 #pragma omp section
 #endif
-      verror = solveMomentumEquations(tStep, vvelRelResidualNormFin, numWetCells, 1, vErrorMessage);
-    }
+          {
+            calculateFriction(0);
+          }
 
-    if(uerror == ErrorCode::CriticalFailure)
-    {
-      error = uerror;
-      errorMessage = uErrorMessage;
-      break;
-    }
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+          {
+            calculateFriction(1);
+          }
+        }
+      }
 
-    if(verror == ErrorCode::CriticalFailure)
-    {
-      error = verror;
-      errorMessage = vErrorMessage;
-      break;
+      //Solve Momentum
+      {
+#ifdef USE_OPENMP
+#pragma omp parallel sections
+#endif
+        {
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+          {
+            uerror = solveMomentumEquations(currentStep, 0, uvelRelResidualNormFin, numUVelSolvIters, uErrorMessage);
+          }
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+          {
+            verror = solveMomentumEquations(currentStep, 1, vvelRelResidualNormFin, numVVelSolvIters, vErrorMessage);
+          }
+        }
+
+        if (uerror == ErrorCode::CriticalFailure)
+        {
+          error = uerror;
+          errorMessage = uErrorMessage;
+          break;
+        }
+
+        if (verror == ErrorCode::CriticalFailure)
+        {
+          error = verror;
+          errorMessage = vErrorMessage;
+          break;
+        }
+      }
+
     }
 
     calculateFaceVelocities();
 
-    error = solvePressureCorrection(tStep, pressureRelRisdualNormFin, 1.0, errorMessage);
+    error = solvePressureCorrection(currentStep, pressureRelRisdualNormFin, 1.0, numPSolvIters, errorMessage);
 
-    if(error == ErrorCode::CriticalFailure)
+    aveNumUVelSolvIters += numUVelSolvIters;
+    aveNumVVelSolvIters += numVVelSolvIters;
+    aveNumPressSolvIters += numPSolvIters;
+
+    if (error == ErrorCode::CriticalFailure)
     {
       break;
     }
 
+    //Velocity & Pressure Correction
+    {
 #ifdef USE_OPENMP
 #pragma omp parallel sections
 #endif
-    {
+      {
 
 #ifdef USE_OPENMP
 #pragma omp section
 #endif
-      applyPressureCorrections();
+        {
+          applyPressureCorrections();
+          calculateCellWSEGradients();
+        }
 
 #ifdef USE_OPENMP
 #pragma omp section
 #endif
-      applyVelocityCorrections();
-
+        {
+          applyVelocityCorrections();
+          calculateCellVelocityGradients();
+          calculateCellEddyViscosities();
+        }
+      }
     }
 
-    calculateCellWSEGradients();
 
-    calculateFaceVelocities();
+    calculateContinuityResiduals(currentStep, continuityRelResidualNormFin);
 
-    calculateContinuityResiduals(tStep, continuityRelResidualNormFin);
-
-    if(numIterations == 0)
+    if (numIterations == 0)
     {
       uvelRelResidualNormInit = uvelRelResidualNormFin;
       vvelRelResidualNormInit = vvelRelResidualNormFin;
@@ -666,27 +795,29 @@ FVHMComponent::ErrorCode FVHMComponent::performSimpleCTimeStep(double tStep, int
     }
 
     //check for convergence
-    if(uvelRelResidualNormFin < m_uvelConvergenceTol &&
-       vvelRelResidualNormFin < m_vvelConvergenceTol &&
-       fabs(pressureRelRisdualNormFin) < m_pressureConvergenceTol &&
-       continuityRelResidualNormFin < m_contConvergenceTol)
     {
-      numIterations++;
-      converged = true;
-      break;
+      if (uvelRelResidualNormFin < m_uvelConvergenceTol &&
+          vvelRelResidualNormFin < m_vvelConvergenceTol &&
+          fabs(pressureRelRisdualNormFin) < m_pressureConvergenceTol &&
+          continuityRelResidualNormFin < m_contConvergenceTol &&
+          currentStep == tStep)
+      {
+        numIterations++;
+        converged = true;
+        break;
+      }
     }
 
-    calculateCellVelocityGradients();
-
-    calculateCellEddyViscosities();
-
     numIterations++;
-
   }
 
-  if(error == ErrorCode::NoError)
+  aveNumUVelSolvIters = aveNumUVelSolvIters / numIterations;
+  aveNumVVelSolvIters = aveNumVVelSolvIters / numIterations;
+  aveNumPressSolvIters = aveNumPressSolvIters / numIterations;
+
+  if (error == ErrorCode::NoError)
   {
-    if(!converged)
+    if (!converged)
     {
       errorMessage = "FVHMComponent Id:" + id() + " failed to converged! at time " + m_currentDateTime;
       error = ErrorCode::FailedToConverge;
@@ -701,10 +832,10 @@ FVHMComponent::ErrorCode FVHMComponent::performSimpleCTimeStep(double tStep, int
   return error;
 }
 
-FVHMComponent::ErrorCode FVHMComponent::performPISOTimeStep(double tStep, int &numIterations, int &numWetCells,
-                                                            double &uvelRelResidualNormInit, double &uvelRelResidualNormFin,
-                                                            double &vvelRelResidualNormInit, double &vvelRelResidualNormFin,
-                                                            double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin,
+int FVHMComponent::performPISOTimeStep(double tStep, int &numIterations,
+                                                            double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
+                                                            double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
+                                                            double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
                                                             double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
                                                             bool &converged, QString &errorMessage)
 {
@@ -714,106 +845,144 @@ FVHMComponent::ErrorCode FVHMComponent::performPISOTimeStep(double tStep, int &n
 
   uvelRelResidualNormFin = vvelRelResidualNormFin = pressureRelRisdualNormFin =
       continuityRelResidualNormFin = uvelRelResidualNormInit = vvelRelResidualNormInit =
-      pressureRelRisdualNormInit = continuityRelResidualNormInit = 0.0;
+      pressureRelRisdualNormInit = continuityRelResidualNormInit = aveNumUVelSolvIters =
+      aveNumVVelSolvIters = aveNumPressSolvIters = 0.0;
 
   converged = false;
 
-  numWetCells = m_numCells;
+  double fractStep = tStep / m_numFractionalSteps;
+  double currentStep = fractStep;
 
-  getWetCells(numWetCells);
+  m_currentCoeff = m_currentCoeff == 0 ? 0 : 0;
 
-
-#ifdef USE_OPENMP
-#pragma omp parallel sections
-#endif
+  while (numIterations < m_itersPerTimeStep)
   {
-
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-    calculateFriction(0);
-
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-    calculateFriction(1);
-  }
-
-  while(numIterations < m_itersPerTimeStep)
-  {
-    uvelRelResidualNormFin = vvelRelResidualNormFin =
-        pressureRelRisdualNormFin = continuityRelResidualNormFin = 0.0;
 
     ErrorCode uerror = ErrorCode::NoError;
     ErrorCode verror = ErrorCode::NoError;
     QString uErrorMessage;
     QString vErrorMessage;
+    uvelRelResidualNormFin = vvelRelResidualNormFin =
+        pressureRelRisdualNormFin = continuityRelResidualNormFin = 0.0;
 
+    int numUVelSolvIters = 0;
+    int numVVelSolvIters = 0;
+    int numPSolvIters  = 0;
+
+    currentStep += fractStep;
+    currentStep = min(currentStep, tStep);
+
+    if (m_numWetCells)
+    {
+
+      //Friction
+      {
 #ifdef USE_OPENMP
 #pragma omp parallel sections
 #endif
-    {
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-      uerror = solveMomentumEquations(tStep, uvelRelResidualNormFin, numWetCells, 0, uErrorMessage);
+        {
 
 #ifdef USE_OPENMP
 #pragma omp section
 #endif
-      verror = solveMomentumEquations(tStep, vvelRelResidualNormFin, numWetCells, 1, vErrorMessage);
-    }
+          {
+            calculateFriction(0);
+          }
 
-    if(uerror == ErrorCode::CriticalFailure)
-    {
-      error = uerror;
-      errorMessage = uErrorMessage;
-      break;
-    }
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+          {
+            calculateFriction(1);
+          }
+        }
+      }
 
-    if(verror == ErrorCode::CriticalFailure)
-    {
-      error = verror;
-      errorMessage = vErrorMessage;
-      break;
+      //Solve Momentum
+      {
+#ifdef USE_OPENMP
+#pragma omp parallel sections
+#endif
+        {
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+          {
+            uerror = solveMomentumEquations(currentStep, 0, uvelRelResidualNormFin, numUVelSolvIters, uErrorMessage);
+          }
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+          {
+            verror = solveMomentumEquations(currentStep, 1, vvelRelResidualNormFin, numVVelSolvIters, vErrorMessage);
+          }
+        }
+
+        if (uerror == ErrorCode::CriticalFailure)
+        {
+          error = uerror;
+          errorMessage = uErrorMessage;
+          break;
+        }
+
+        if (verror == ErrorCode::CriticalFailure)
+        {
+          error = verror;
+          errorMessage = vErrorMessage;
+          break;
+        }
+      }
+
     }
 
     calculateFaceVelocities();
 
-    for(int i = 0 ; i < 2; i++)
+    for(int m = 0; m < 2; m++)
     {
-      error = solvePressureCorrection(tStep, pressureRelRisdualNormFin, 0.0, errorMessage);
+      error = solvePressureCorrection(currentStep, pressureRelRisdualNormFin, 0.0, numPSolvIters, errorMessage);
 
+      aveNumUVelSolvIters += numUVelSolvIters;
+      aveNumVVelSolvIters += numVVelSolvIters;
+      aveNumPressSolvIters += numPSolvIters;
+
+      if (error == ErrorCode::CriticalFailure)
+      {
+        break;
+      }
+
+      //Velocity & Pressure Correction
+      {
 #ifdef USE_OPENMP
 #pragma omp parallel sections
 #endif
-      {
+        {
 
 #ifdef USE_OPENMP
 #pragma omp section
 #endif
-        applyPressureCorrections();
+          {
+            applyPressureCorrections();
+            calculateCellWSEGradients();
+          }
 
 #ifdef USE_OPENMP
 #pragma omp section
 #endif
-        applyVelocityCorrections();
-
+          {
+            applyVelocityCorrections();
+            calculateCellVelocityGradients();
+            calculateCellEddyViscosities();
+          }
+        }
       }
-
-      calculateCellWSEGradients();
-
-      calculateFaceVelocities();
     }
 
-    if(error == ErrorCode::CriticalFailure)
-    {
-      break;
-    }
 
-    calculateContinuityResiduals(tStep, continuityRelResidualNormFin);
+    calculateContinuityResiduals(currentStep, continuityRelResidualNormFin);
 
-    if(numIterations == 0)
+    if (numIterations == 0)
     {
       uvelRelResidualNormInit = uvelRelResidualNormFin;
       vvelRelResidualNormInit = vvelRelResidualNormFin;
@@ -822,27 +991,29 @@ FVHMComponent::ErrorCode FVHMComponent::performPISOTimeStep(double tStep, int &n
     }
 
     //check for convergence
-    if(uvelRelResidualNormFin < m_uvelConvergenceTol &&
-       vvelRelResidualNormFin < m_vvelConvergenceTol &&
-       fabs(pressureRelRisdualNormFin) < m_pressureConvergenceTol &&
-       continuityRelResidualNormFin < m_contConvergenceTol)
     {
-      numIterations++;
-      converged = true;
-      break;
+      if (uvelRelResidualNormFin < m_uvelConvergenceTol &&
+          vvelRelResidualNormFin < m_vvelConvergenceTol &&
+          fabs(pressureRelRisdualNormFin) < m_pressureConvergenceTol &&
+          continuityRelResidualNormFin < m_contConvergenceTol &&
+          currentStep == tStep)
+      {
+        numIterations++;
+        converged = true;
+        break;
+      }
     }
-
-    calculateCellVelocityGradients();
-
-    //calculate turbulent viscousities
-    calculateCellEddyViscosities();
 
     numIterations++;
   }
 
-  if(error == ErrorCode::NoError)
+  aveNumUVelSolvIters = aveNumUVelSolvIters / numIterations;
+  aveNumVVelSolvIters = aveNumVVelSolvIters / numIterations;
+  aveNumPressSolvIters = aveNumPressSolvIters / numIterations;
+
+  if (error == ErrorCode::NoError)
   {
-    if(!converged)
+    if (!converged)
     {
       errorMessage = "FVHMComponent Id:" + id() + " failed to converged! at time " + m_currentDateTime;
       error = ErrorCode::FailedToConverge;
@@ -857,20 +1028,20 @@ FVHMComponent::ErrorCode FVHMComponent::performPISOTimeStep(double tStep, int &n
   return error;
 }
 
-FVHMComponent::ErrorCode FVHMComponent::solveMomentumEquations(double tStep, double &uvelRelResidualNorm, int numWetCells, int uv, QString &errorMessage)
+FVHMComponent::ErrorCode FVHMComponent::solveMomentumEquations(double tStep, int uv, double &uvelRelResidualNorm, int &numSolvIters, QString &errorMessage)
 {
   //momentum
-  double *u_b = new double[numWetCells];
-  SparseMatrix coeffMatrix(numWetCells, 4);
-  double *x = new double[numWetCells];
+  double *u_b = new double[m_numWetCells];
+  SparseMatrix coeffMatrix(0,m_numWetCells-1,m_numWetCells, 4);
+  double *x = new double[m_numWetCells];
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-  for(int index = 0 ; index < m_numCells ; index++)
+  for(int index = 0 ; index < m_numWetCells ; index++)
   {
-
-    TriCV *cv = m_controlVolumes[index];
+    int cvIndex = m_wetCells[index];
+    TriCV *cv = m_controlVolumes[cvIndex];
 
     for(int u = 0; u < cv->numEdges + 1 ; u++)
     {
@@ -879,25 +1050,26 @@ FVHMComponent::ErrorCode FVHMComponent::solveMomentumEquations(double tStep, dou
 
     double a_p = cv->h->value * cv->area / tStep;
 
-    if(cv->wetIndex)
+    double b = 0.0;
+
+    for(int i = 0; i < cv->numEdges; i++)
     {
-      double b = 0.0;
+      FaceNormVelBC &faceVel = cv->faceNormalVels[i];
+      double evel = faceVel.value;
 
-      for(int i = 0; i < cv->numEdges; i++)
+      if(evel)
       {
-        FaceNormVelBC &faceVel = cv->faceNormalVels[i];
-        double evel = faceVel.value;
 
-        if(evel)
+        int cvIndex = cv->nTris[i];
+        double edgeDepth = cv->faceDepths[i].value;
+        double tempCoeff = m_useAdvection * evel * cv->r_eta[i] * edgeDepth;
+
+        if(cvIndex > -1)
         {
-          TriCV *cvn = nullptr;
-          int cvIndex = cv->nTris[i];
-          double edgeDepth = cv->faceDepths[i].value;
-          double tempCoeff = m_useAdvection * evel * cv->r_eta[i] * edgeDepth;
+          TriCV *cvn = cvn = m_controlVolumes[cvIndex];
 
-          if(cvIndex > -1 && (cvn = m_controlVolumes[cvIndex])->wetIndex)
+          if(cvn->wetIndex)
           {
-
             double a_n = 0.0;
             double wl_n = cv->w_l[i];
             double wl_p = 1.0 - wl_n;
@@ -918,10 +1090,6 @@ FVHMComponent::ErrorCode FVHMComponent::solveMomentumEquations(double tStep, dou
               a_n += tempCoeff *  (1.0 - ru * wl_p);
             }
 
-            //            double gradVelX = wl_p * cv->grad_vel[uv].v[0] + wl_n * cvn->grad_vel[uv].v[0];
-            //            double gradVelY = wl_p * cv->grad_vel[uv].v[1] + wl_n * cvn->grad_vel[uv].v[1];
-            //            b -= tempCoeff * Vect::dotProduct(cv->df[i].v[0], cv->df[i].v[1], 0.0, gradVelX, gradVelY, 0.0);
-
             double faceTurbulentVisco = wl_p * cv->eddyViscosity + wl_n * cvn->eddyViscosity;
 
             //direct diffusion
@@ -933,85 +1101,87 @@ FVHMComponent::ErrorCode FVHMComponent::solveMomentumEquations(double tStep, dou
                  cv->cross_diff_term[i] * (cv->nodeVels[uv][i + 1] - cv->nodeVels[uv][i]);
 
             cv->velCoeffs[uv][i + 1] = a_n;
-
-          }
-          else if(faceVel.isBC)
-          {
-            b -= tempCoeff * faceVel.vel->v[uv];
           }
         }
-      }
-
-      cv->velCoeffs[uv][0] = a_p;
-
-      for(int i = 0; i < cv->numEdges + 1; i++)
-      {
-        int cvnIndex = cv->orderedNTris[i];
-        double coeff = 0.0;
-
-        if(cvnIndex > -1 && (coeff = cv->velCoeffs[uv][cv->orderedNTrisIndexes[i]]))
+        else if(faceVel.isBC)
         {
-          TriCV *cvn = m_controlVolumes[cvnIndex];
-          coeffMatrix.appendValue(cv->wetCellIndex, cvn->wetCellIndex, coeff);
+          b -= tempCoeff * faceVel.vel->v[uv];
         }
       }
+    }
 
-      //const
+    cv->velCoeffs[uv][0] = a_p;
 
-      //del_v/del_t
-      double dv_dt = cv->prevH->value * cv->prevVel[uv].value * cv->area / tStep;
+    for(int i = 0; i < cv->numEdges + 1; i++)
+    {
+      int cvnIndex = cv->orderedNTris[i];
+      double coeff = 0.0;
 
-      //pressure gradient
-      double gradp = -g * cv->grad_z->v[uv] * cv->area * cv->h->value;
-
-      //external force
-      double extforce = cv->externalForce->v[uv] * cv->area * cv->h->value;
-
-      double friction = 0.0;
-
-      //friction
+      if(cvnIndex > -1 && (coeff = cv->velCoeffs[uv][cv->orderedNTrisIndexes[i]]))
       {
-        friction = -cv->friction[uv];
+        TriCV *cvn = m_controlVolumes[cvnIndex];
+        coeffMatrix.appendValue(cv->wetCellIndex, cvn->wetCellIndex, coeff);
+      }
+    }
 
+    //del_v/del_t
+    double dv_dt = cv->prevH->value * cv->prevVel[uv].value * cv->area / tStep;
+
+    //pressure gradient
+    double gradp = -g * cv->grad_z->v[uv] * cv->h->value * cv->area;
+
+    //external force
+    double extforce = cv->externalForce->v[uv] * cv->h->value * cv->area;
+
+    double friction = 0.0;
+
+    //friction
+
+    if(!isInfOrNan(cv->friction[uv]))
+    {
+      friction = -1.0 * cv->friction[uv];
+
+      if(m_useWall)
+      {
         for(int f = 0 ; f < cv->numEdges; f++)
         {
-          friction += -m_useWall * cv->wallShearFriction[uv][f];
+          friction += -1.0 * cv->wallShearFriction[uv][f];
         }
       }
-
-      b += dv_dt + gradp + friction + extforce;
-
-
-      //const coefficients
-      u_b[cv->wetCellIndex] = b;
-
-      //initial guess
-      x[cv->wetCellIndex] = cv->vel[uv].value;
-
     }
-    else
-    {
-      cv->velCoeffs[uv][0] = a_p;
-    }
+
+    b += dv_dt + gradp + friction + extforce;
+
+    //const coefficients
+    u_b[cv->wetCellIndex] = b;
+
+    //initial guess
+    x[cv->wetCellIndex] = cv->vel[uv].value;
+
   }
 
   //set up momentum equations calculate u and solve
-  double *residuals = new double[numWetCells]();
-  ErrorCode error = solve(coeffMatrix, u_b, x, residuals, uvelRelResidualNorm,errorMessage);
+  double *residuals = new double[m_numWetCells]();
+
+  ErrorCode error = ErrorCode::NoError;
+
+#ifdef USE_OPENMP
+#pragma omp critical
+#endif
+  {
+    error = mpiSolve(coeffMatrix, u_b, x, residuals, uvelRelResidualNorm, numSolvIters, errorMessage);
+  }
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-  for(int index = 0; index < m_numCells ; index++)
+  for(int index = 0; index < m_numWetCells ; index++)
   {
-    TriCV *cv = m_controlVolumes[index];
-
-    if(cv->wetIndex)
-    {
-      cv->prevIterVel[uv] = cv->vel[uv].value;
-      cv->vel[uv].value = x[cv->wetCellIndex];
-      cv->velResidualIter[uv] = residuals[cv->wetCellIndex];
-    }
+    int cvIndex = m_wetCells[index];
+    TriCV *cv = m_controlVolumes[cvIndex];
+    cv->prevIterVel[uv] = cv->vel[uv].value;
+    cv->vel[uv].value = x[cv->wetCellIndex];
+    cv->velResidualIter[uv] = residuals[cv->wetCellIndex];
   }
 
   delete[] u_b;
@@ -1085,9 +1255,11 @@ void FVHMComponent::calculateFaceVelocities()
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-  for(int c = 0 ; c < m_numCells ; c++)
+  for(int c = 0; c < m_numContCells; c++)
   {
-    m_controlVolumes[c]->calculateFaceVelocities();
+    int cvIndex = m_contCells[c];
+    TriCV *cv =  m_controlVolumes[cvIndex];
+    cv->calculateFaceVelocities();
   }
 }
 
@@ -1703,67 +1875,60 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
   return ru;
 }
 
-FVHMComponent::ErrorCode FVHMComponent::solvePressureCorrection(double tStep, double &pressureRelResidualNorm, double minorTermsCoeff , QString &errorMessage)
+FVHMComponent::ErrorCode FVHMComponent::solvePressureCorrection(double tStep, double &pressureRelResidualNorm, double minorTermsCoeff, int &numSolvIters, QString &errorMessage)
 {
 
   ErrorCode error;
-  double *x = new double[m_numCells];
+  double *x = new double[m_numContCells];
+  double *h_b = new double[m_numContCells];
+  double *residuals = new double[m_numContCells];
+  SparseMatrix coeffMatrix(0,m_numContCells - 1,m_numContCells, 4);
 
-  for(int iter = 0 ; iter < m_numPressureCorrectionIterations ; iter++)
-  {
-
-    //#ifdef USE_OPENMP
-    //#pragma omp parallel for
-    //#endif
-    //    for(int rc = 0 ; rc < m_numCells ; rc++)
-    //    {
-    //      TriCV * cv = m_controlVolumes[rc];
-    //      cv->calculateZCorrectionGradients();
-    //    }
-
-    double *h_b = new double[m_numCells];
-    SparseMatrix coeffMatrix(m_numCells, 4);
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-    for(int index = 0 ; index < m_numCells ; index++)
+  for(int index = 0 ; index < m_numContCells ; index++)
+  {
+    int cvIndex = m_contCells[index];
+    TriCV *cv = m_controlVolumes[cvIndex];
+
+    x[cv->contCellIndex] = 0.0;
+
+    double zCorrEst = 0;
+
+    double constTerm  = 0;
+
+    double h_p = cv->area / tStep;
+
+    double sumEdgeCoeffs = 0;
+
+    for(int e = 0; e < cv->numEdges; e++)
     {
-      x[index] = 0.0;
+      sumEdgeCoeffs += cv->velCoeffs[m_currentCoeff][e+1];
+    }
 
-      TriCV *cv = m_controlVolumes[index];
+    double coeffucv = cv->velCoeffs[m_currentCoeff][0] + minorTermsCoeff * sumEdgeCoeffs;
 
-      double constTerm  = 0;
+    double *coefficients = new double[cv->numEdges + 1]();
 
-      double h_p = cv->area / tStep;
+    for(int i = 0; i < cv->numEdges; i++)
+    {
+      coefficients[i+1] = 0.0;
+      double edgeDepth = cv->faceDepths[i].value;
+      double eta = cv->r_eta[i];
+      double evel = cv->faceNormalVels[i].value;
 
-      double sumEdgeCoeffs = 0;
+      int cvnIndex = cv->nTris[i];
 
-      for(int e = 0; e < cv->numEdges; e++)
+      double wl_n = cv->w_l[i];
+      double wl_p = 1.0 - wl_n;
+
+      if(cvnIndex > -1)
       {
-        sumEdgeCoeffs += cv->velCoeffs[m_currentCoeff][e+1];
-      }
+        TriCV *cvn = m_controlVolumes[cvnIndex];
 
-      double coeffucv = cv->velCoeffs[m_currentCoeff][0] + minorTermsCoeff * sumEdgeCoeffs;
-
-      double *coefficients = new double[cv->numEdges + 1]();
-      coefficients[0] = 0.0;
-
-      double zcorrest = 0.0;
-
-      for(int i = 0; i < cv->numEdges; i++)
-      {
-        coefficients[i+1] = 0.0;
-        int cvnIndex = cv->nTris[i];
-        double edgeDepth = cv->faceDepths[i].value;
-        double eta = cv->r_eta[i];
-
-        TriCV *cvn = nullptr;
-
-        double wl_n = cv->w_l[i];
-        double wl_p = 1.0 - wl_n;
-
-        if(cvnIndex > -1 && (cvn = m_controlVolumes[cvnIndex]))
+        if(cv->wetIndex && cvn->wetIndex)
         {
           sumEdgeCoeffs = 0;
 
@@ -1774,93 +1939,111 @@ FVHMComponent::ErrorCode FVHMComponent::solvePressureCorrection(double tStep, do
 
           double coeffucvn = cvn->velCoeffs[m_currentCoeff][0] + minorTermsCoeff * sumEdgeCoeffs;
 
-          double A_e = (wl_p * cv->area / coeffucv) + (wl_n * cvn->area / coeffucvn);
 
-          double velCorrection = -g * A_e *  cv->faceDepths[i].value / cv->r_xi_dot_e_n[i];
+          double A_e_cv = wl_p * cv->area / coeffucv;
+          double A_e_cvn = wl_n * cvn->area / coeffucvn;
 
-          h_p += -1.0 * edgeDepth * eta * velCorrection * m_velocityRelaxFactor;
-          double h_n = 1.0 * edgeDepth * eta * velCorrection * m_velocityRelaxFactor;
+          double velCorrection = -g * (A_e_cv + A_e_cvn) *  edgeDepth / cv->r_xi_l[i];
 
-          h_p += wl_p * eta * cv->faceNormalVels[i].value;
-          h_n += wl_n * eta * cv->faceNormalVels[i].value;
-
-          //          constTerm -= eta * cv->faceNormalVels[i].value * Vect::dotProduct(cv->df[i], cv->grad_z_corr[0]);
-
-          //          double facCV = wl_p * g * cv->h->value;
-          //          double facCVN = wl_n * g * cvn->h->value;
-
-          //          double tv2x = facCV * cv->grad_z_corr->v[0] + facCVN * cvn->grad_z_corr->v[0];
-          //          double tv2y = facCV * cv->grad_z_corr->v[1] + facCVN * cvn->grad_z_corr->v[1];
-
-          //          constTerm -= A_e * Vect::dotProduct(tv2x,tv2y, 0, cv->r_xi[i]) / cv->r_xi_dot_e_n[i];
-
-
-          //          double cvgradZX = cv->h->value * cv->grad_z_corr->v[0];
-          //          double cvgradZY = cv->h->value * cv->grad_z_corr->v[1];
-
-          //          double cvngradZX = cvn->h->value * cvn->grad_z_corr->v[0];
-          //          double cvngradZY = cvn->h->value * cvn->grad_z_corr->v[1];
-
-          //          constTerm += g * A_e * (Vect::dotProduct(cvngradZX, cvngradZY, 0.0, cv->r_n_corr[i]) -
-          //                                  Vect::dotProduct(cvgradZX , cvgradZY , 0.0, cv->r_p_corr[i])) / cv->r_xi_dot_e_n[i];
+          h_p -= edgeDepth * eta * velCorrection * m_velocityRelaxFactor;
+          double h_n = edgeDepth * eta * velCorrection  * m_velocityRelaxFactor;
 
           coefficients[i+1] = h_n;
         }
-
-        double infest = eta * cv->faceDepths[i].value * cv->faceNormalVels[i].value;
-        constTerm -= infest;
-        zcorrest += infest * tStep / cv->area;
-
       }
 
-      coefficients[0] = h_p;
-
-      for(int i = 0; i < cv->numEdges + 1; i++)
-      {
-        int cvnIndex = cv->orderedNTris[i];
-        double coeff = 0.0;
-
-        if(cvnIndex > -1 && (coeff = coefficients[cv->orderedNTrisIndexes[i]]))
-        {
-          coeffMatrix.appendValue(cv->index, m_controlVolumes[cvnIndex]->index, coeff);
-        }
-      }
-
-      delete[] coefficients;
-
-
-      //constTerm
-      constTerm += cv->inflow;
-
-      zcorrest += cv->inflow * tStep / cv->area;
-
-      x[cv->index] = zcorrest;
-
-      //tstep terms
-      constTerm += (cv->prevH->value - cv->h->value) * cv->area  / tStep;
-
-      //set const value
-      h_b[cv->index] = constTerm;
+      double edgeFlow = eta * edgeDepth * evel;
+      constTerm -= edgeFlow;
+      zCorrEst += edgeFlow;
     }
 
-    double *residuals = new double[m_numCells];
-    error = solve(coeffMatrix, h_b, x, residuals, pressureRelResidualNorm, errorMessage);
+    coefficients[0] = h_p;
+
+    for(int i = 0; i < cv->numEdges + 1; i++)
+    {
+      int cvnIndex = cv->orderedNTris[i];
+      double coeff = 0.0;
+
+      if(cvnIndex > -1 && (coeff = coefficients[cv->orderedNTrisIndexes[i]]))
+      {
+        coeffMatrix.appendValue(cv->contCellIndex, m_controlVolumes[cvnIndex]->contCellIndex, coeff);
+      }
+    }
+
+    delete[] coefficients;
+
+    //constTerm
+    constTerm += cv->inflowOutflow;
+
+    //tstep terms
+    constTerm += (cv->prevH->value - cv->h->value) * cv->area  / tStep;
+
+    //set const value
+    h_b[cv->contCellIndex] = constTerm;
+
+    zCorrEst += constTerm;
+    zCorrEst *= tStep / cv->area;
+    x[cv->contCellIndex] = zCorrEst;
+  }
+
+  error = mpiSolve(coeffMatrix, h_b, x, residuals, pressureRelResidualNorm, numSolvIters, errorMessage);
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-    for(int rc = 0 ; rc < m_numCells ; rc++)
-    {
-      TriCV * cv = m_controlVolumes[rc];
-      double zCorr = x[cv->index];
-      cv->zCorrection = zCorr;
-    }
-
-    delete[] residuals;
-    delete[] h_b;
+  for(int rc = 0 ; rc < m_numContCells ; rc++)
+  {
+    int cvIndex = m_contCells[rc];
+    TriCV * cv = m_controlVolumes[cvIndex];
+    double zCorr = x[cv->contCellIndex];
+    cv->zCorrection = zCorr;
   }
 
-  pressureRelResidualNorm = l2Norm(x,m_numCells);
+  if(error)
+  {
+    for(int rc = 0 ; rc < m_numContCells ; rc++)
+    {
+      int cvIndex = m_contCells[rc];
+      TriCV * cv = m_controlVolumes[cvIndex];
+
+      if(cv->wetIndex)
+        cv->printDetails();
+    }
+  }
+
+  delete[] residuals;
+  delete[] h_b;
+
+
+  //Cheap
+  {
+    //int count = 0;
+    //#ifdef USE_OPENMP
+    //#pragma omp parallel for
+    //#endif
+    //    for(int index = 0 ; index < m_numCells ; index++)
+    //    {
+
+    //      TriCV *cv = m_controlVolumes[index];
+
+    //      {
+    //        double zCorrection = 0.0;
+
+    //        zCorrection = cv->inflow + (cv->prevH->value - cv->h->value) * cv->area / tStep;
+
+    //        for(int i = 0; i < cv->numEdges; i++)
+    //        {
+    //          zCorrection -= cv->faceNormalVels[i].value * cv->faceDepths[i].value * cv->r_eta[i];
+    //        }
+
+    //        zCorrection =  zCorrection * tStep / cv->area;
+    //        x[cv->index] = zCorrection;
+    //        cv->zCorrection = zCorrection;
+    //      }
+    //    }
+  }
+
+  pressureRelResidualNorm = l2Norm(x,m_numContCells);
 
   delete[] x;
 
@@ -1873,19 +2056,14 @@ void FVHMComponent::applyPressureCorrections()
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-  for(int c = 0 ; c < m_numCells ; c++)
+  for(int c = 0 ; c < m_numContCells ; c++)
   {
-
-    TriCV *cv = m_controlVolumes[c];
+    int cvIndex = m_contCells[c];
+    TriCV *cv = m_controlVolumes[cvIndex];
 
     if(cv->z->isBC == false)
     {
-      double zCorr = cv->zCorrection;
-
-      //      double zNew = cv->z->value + m_pressureRelaxFactor * zCorr;
-      //      cv->setVFRWSE(zNew);
-
-      double hNew = max(m_viscousSubLayerDepth, cv->h->value + m_pressureRelaxFactor * zCorr);
+      double hNew = cv->h->value + m_pressureRelaxFactor * cv->zCorrection;
       cv->setVFRDepth(hNew);
     }
   }
@@ -1897,9 +2075,10 @@ void FVHMComponent::applyVelocityCorrections()
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-  for(int c = 0 ; c < m_numCells ; c++)
+  for(int c = 0 ; c < m_numWetCells ; c++)
   {
-    TriCV *cv = m_controlVolumes[c];
+    int cvIndex = m_wetCells[c];
+    TriCV *cv = m_controlVolumes[cvIndex];
     cv->vel[0].value = m_velocityRelaxFactor * cv->vel[0].value  + (1.0 - m_velocityRelaxFactor) * cv->prevIterVel[0];
     cv->vel[1].value = m_velocityRelaxFactor * cv->vel[1].value  + (1.0 - m_velocityRelaxFactor) * cv->prevIterVel[1];
   }
@@ -1907,16 +2086,17 @@ void FVHMComponent::applyVelocityCorrections()
 
 void FVHMComponent::calculateContinuityResiduals(double tStep, double &contRelResidualNorm)
 {
-  double *residuals = new double[m_numCells];
+  double *residuals = new double[m_numContCells];
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-  for(int rc = 0 ; rc < m_numCells ; rc++)
+  for(int rc = 0 ; rc < m_numContCells ; rc++)
   {
-    TriCV *cv = m_controlVolumes[rc];
+    int cvIndex = m_contCells[rc];
+    TriCV *cv = m_controlVolumes[cvIndex];
 
-    double sumflow = -cv->inflow * tStep;
+    double sumflow = -cv->inflowOutflow * tStep;
 
     for(int i = 0; i < cv->numEdges ; i++)
     {
@@ -1924,11 +2104,11 @@ void FVHMComponent::calculateContinuityResiduals(double tStep, double &contRelRe
     }
 
     sumflow += (cv->h->value - cv->prevH->value) * cv->area;
-    residuals[rc] = sumflow;
+    residuals[cv->contCellIndex] = sumflow;
     cv->contResidualIter = sumflow;
   }
 
-  contRelResidualNorm = l2Norm(residuals,m_numCells);
+  contRelResidualNorm = l2Norm(residuals,m_numContCells);
 
   delete[] residuals;
 }
@@ -1942,13 +2122,13 @@ void FVHMComponent::updateExternalInflowOutflowTotals(double tStep)
   {
     TriCV *cv = m_controlVolumes[rc];
 
-    if(cv->inflow > 0)
+    if(cv->inflowOutflow > 0)
     {
-      cv->totalExternalInflow += cv->inflow * tStep;
+      cv->totalExternalInflow += cv->inflowOutflow * tStep;
     }
-    else if(cv->inflow)
+    else if(cv->inflowOutflow)
     {
-      cv->totalExternalOutflow += -cv->inflow * tStep;
+      cv->totalExternalOutflow += -cv->inflowOutflow * tStep;
     }
 
     for(int f = 0 ; f < cv->numEdges; f++)
@@ -1980,55 +2160,52 @@ FVHMComponent::ErrorCode FVHMComponent::solveConstituentEquations(int cIndex, do
 
 void FVHMComponent::calculateFriction(int uv)
 {
-
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-  for(int i = 0; i < m_numCells; i++)
+  for(int i = 0; i < m_numWetCells; i++)
   {
-    TriCV *cv = m_controlVolumes[i];
-
-    if(cv->wetIndex)
-    {
-      calculateFriction(cv, uv);
-    }
-    else
-    {
-      cv->friction[uv] = 0.0;
-
-      for(int f = 0; f < 2; f++)
-      {
-        for(int j = 0 ; j < cv->numEdges ; j++)
-        {
-          cv->wallShearFriction[f][j] = 0.0;
-        }
-      }
-    }
+    int cvIndex = m_wetCells[i];
+    TriCV *cv = m_controlVolumes[cvIndex];
+    calculateFriction(cv, uv);
   }
 }
 
 void FVHMComponent::calculateFriction(TriCV *cv, int uv)
 {
-  double cf = g * cv->h->value * cv->mannings * cv->mannings / pow(cv->h->value, 4.0/3.0);
-  double umag = hypot(cv->vel[0].value, cv->vel[1].value);
-  double frictionVel = sqrt(cf * umag * umag);
-
   if(fabs(cv->vel[uv].value - 0.0) > m_epsilon)
   {
-    cv->friction[uv] = cf * umag * cv->vel[uv].value *  cv->area;
+    double cf = g * cv->mannings * cv->mannings / pow(cv->h->value, 1.0/3.0);
+    double umag = hypot(cv->vel[0].value, cv->vel[1].value);
+    double frictionVel = sqrt(cf * umag * umag);
 
-    for(int i = 0 ; i < cv->numEdges ; i++)
+    double friction =  cf * umag * cv->vel[uv].value * cv->area;
+    cv->friction[uv] = friction;
+
+    if(m_useWall)
     {
-      int xy = (uv + 1) % 2;
-      double relp = cv->r_e_l_p[i].v[xy];
-
-      if(cv->faceNormalVels[i].calculateWallShearStress && relp > 0.0)
+      for(int i = 0 ; i < cv->numEdges ; i++)
       {
-        double yp = frictionVel * relp  / m_viscosity;
-        double wallShear = frictionVel * 0.41 * cv->vel[uv].value * cv->faceDepths[i].value * cv->r_eta[i] / log(9.758 * yp);
-        cv->wallShearFriction[uv][i] = wallShear;
+        //      int xy = (uv + 1) % 2;
+        double relp = cv->r_e_l_p[i];//.v[xy];
+
+        if(cv->faceNormalVels[i].calculateWallShearStress && relp > 0.0)
+        {
+          double yp = frictionVel * relp  / m_viscosity;
+          double wallShear = frictionVel * 0.41 * cv->vel[uv].value * cv->faceDepths[i].value * cv->r_eta[i] / log(9.758 * yp);
+          cv->wallShearFriction[uv][i] = wallShear;
+        }
+        else
+        {
+          cv->wallShearFriction[uv][i] = 0.0;
+        }
       }
-      else
+    }
+    else
+    {
+      cv->friction[uv] = 0.0;
+
+      for(int i = 0 ; i < cv->numEdges; i++)
       {
         cv->wallShearFriction[uv][i] = 0.0;
       }
@@ -2038,12 +2215,9 @@ void FVHMComponent::calculateFriction(TriCV *cv, int uv)
   {
     cv->friction[uv] = 0.0;
 
-    for(int f = 0; f < 2 ; f++)
+    for(int i = 0 ; i < cv->numEdges; i++)
     {
-      for(int i = 0 ; i < cv->numEdges; i++)
-      {
-        cv->wallShearFriction[f][i] = 0.0;
-      }
+      cv->wallShearFriction[uv][i] = 0.0;
     }
   }
 }
@@ -2061,11 +2235,6 @@ void FVHMComponent::interpolateFaceVelocityFromGradient(TriCV *cv, int faceIndex
 void FVHMComponent::calculateCellVelocityGradients()
 {
 
-  double* residualsUX = new double[m_numCells];
-  double* residualsUY = new double[m_numCells];
-  double* residualsVX = new double[m_numCells];
-  double* residualsVY = new double[m_numCells];
-
   double rux = 0.0;
   double ruy = 0.0;
 
@@ -2074,15 +2243,23 @@ void FVHMComponent::calculateCellVelocityGradients()
 
   int iters = 0;
 
-
   do
   {
+
+    rux = 0.0;
+    ruy = 0.0;
+
+    rvx = 0.0;
+    rvy = 0.0;
+
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-    for(int i = 0 ; i < m_numCells ; i++)
+    for (int i = 0; i < m_numContCells; i++)
     {
-      TriCV *cv = m_controlVolumes[i];
+      int cvIndex = m_contCells[i];
+
+      TriCV *cv = m_controlVolumes[cvIndex];
 
       double drux = cv->grad_vel[0].v[0];
       double druy = cv->grad_vel[0].v[1];
@@ -2092,40 +2269,59 @@ void FVHMComponent::calculateCellVelocityGradients()
 
       cv->calculateVelocityGradient();
 
-      residualsUX[i] = drux - cv->grad_vel[0].v[0];
-      residualsUY[i] = druy - cv->grad_vel[0].v[1];
+      drux = fabs(drux - cv->grad_vel[0].v[0]);
+      druy = fabs(druy - cv->grad_vel[0].v[1]);
 
-      residualsVX[i] = drvx - cv->grad_vel[1].v[0];
-      residualsVY[i] = drvy - cv->grad_vel[1].v[1];
+      drvx = fabs(drvx - cv->grad_vel[1].v[0]);
+      drvy = fabs(drvy - cv->grad_vel[1].v[1]);
 
+      if (drux > rux)
+      {
+#ifdef USE_OPENMP
+#pragma omp atomic read
+#endif
+        rux = drux;
+      }
+
+      if (druy > ruy)
+      {
+#ifdef USE_OPENMP
+#pragma omp atomic read
+#endif
+        ruy = druy;
+      }
+
+      if (drvx > rvx)
+      {
+#ifdef USE_OPENMP
+#pragma omp atomic read
+#endif
+        rvx = drvx;
+      }
+
+      if (drvy > rvy)
+      {
+#ifdef USE_OPENMP
+#pragma omp atomic read
+#endif
+        rvy = drvy;
+      }
     }
 
-    rux = l2Norm(residualsUX, m_numCells);
-    ruy = l2Norm(residualsUY, m_numCells);
+    iters++;
 
-    rvx = l2Norm(residualsVX, m_numCells);
-    rvy = l2Norm(residualsVY, m_numCells);
-
-    iters ++;
-
-  } while (rux > 1e-6 && ruy > 1e-6 && rvx > 1e-6 && rvy > 1e-6 && iters < 500);
+  } while (rux > 1e-6 && ruy > 1e-6 && rvx > 1e-6 && rvy > 1e-6 && iters < 1000);
 
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-  for(int i = 0 ; i < m_numCells ; i++)
+  for (int i = 0; i < m_numContCells; i++)
   {
-    TriCV *cv = m_controlVolumes[i];
-//    cv->interpolateNodeVelocities();
+    int cvIndex = m_contCells[i];
+    TriCV *cv = m_controlVolumes[cvIndex];
     cv->calculateNodeVelocities();
   }
-
-
-  delete[] residualsUX;
-  delete[] residualsUY;
-  delete[] residualsVX;
-  delete[] residualsVY;
 
 }
 
@@ -2142,10 +2338,11 @@ void FVHMComponent::calculateCellEddyViscosities()
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-          for(int i = 0 ; i < m_numCells ; i++)
+          for(int i = 0 ; i < m_numWetCells ; i++)
           {
+            int cvIndex = m_wetCells[i];
             //Smargorinsky. Need to check to make sure correct.
-            TriCV *cv = m_controlVolumes[i];
+            TriCV *cv = m_controlVolumes[cvIndex];
             double grad_ux_2 = cv->grad_vel[0].v[0] * cv->grad_vel[0].v[0];
             double grad_vy_2 = cv->grad_vel[1].v[1] * cv->grad_vel[1].v[1];
             double grad_uv_2 = cv->grad_vel[1].v[0] + cv->grad_vel[0].v[1];
@@ -2163,9 +2360,10 @@ void FVHMComponent::calculateCellEddyViscosities()
 #pragma omp parallel for
 #endif
           // parabolic eddy viscosity
-          for(int i = 0 ; i < m_numCells ; i++)
+          for(int i = 0 ; i < m_numWetCells ; i++)
           {
-            TriCV *cv = m_controlVolumes[i];
+            int cvIndex = m_wetCells[i];
+            TriCV *cv = m_controlVolumes[cvIndex];
             double usquared = cv->vel[0].value * cv->vel[0].value + cv->vel[1].value * cv->vel[1].value;
             double frictionVel = sqrt(g * cv->h->value * cv->mannings * cv->mannings * usquared / pow(cv->h->value, 4.0/3.0));
             cv->eddyViscosity = m_parabolicEddyViscosityConstant * frictionVel * cv->h->value ;
@@ -2179,9 +2377,10 @@ void FVHMComponent::calculateCellEddyViscosities()
 #pragma omp parallel for
 #endif
     // parabolic eddy viscosity
-    for(int i = 0 ; i < m_numCells ; i++)
+    for(int i = 0 ; i < m_numWetCells ; i++)
     {
-      TriCV *cv = m_controlVolumes[i];
+      int cvIndex = m_wetCells[i];
+      TriCV *cv = m_controlVolumes[cvIndex];
       cv->interpolateNodeEddyViscosities();
     }
   }
@@ -2190,124 +2389,392 @@ void FVHMComponent::calculateCellEddyViscosities()
 void FVHMComponent::calculateCellWSEGradients()
 {
 
-  double* residualsX = new double[m_numCells];
-  double* residualsY = new double[m_numCells];
-
-  double rx = 0.0;
-  double ry = 0.0;
-
-  int iters = 0;
-
-  do
+#ifdef USE_OPENMP
+#pragma omp parallel sections
+#endif
   {
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+    {
+      double zx = 0.0;
+      double zy = 0.0;
+
+      int iters = 0;
+
+      do
+      {
+
+        zx = 0.0;
+        zy = 0.0;
+
+
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-    for(int i = 0 ; i < m_numCells ; i++)
-    {
-      TriCV *cv = m_controlVolumes[i];
+        for (int i = 0; i < m_numContCells; i++)
+        {
+          int cvIndex = m_contCells[i];
+          TriCV *cv = m_controlVolumes[cvIndex];
 
-      if(!cv->grad_z->isBC)
+          if (!cv->grad_z->isBC)
+          {
+            double gradzx = cv->grad_z->v[0];
+            double gradzy = cv->grad_z->v[1];
+
+            cv->calculateWSEGradient();
+
+            double tmpzx = fabs(cv->grad_z->v[0] - gradzx);
+            double tmpzy = fabs(cv->grad_z->v[1] - gradzy);
+
+
+            {
+              if (tmpzx > zx)
+              {
+#ifdef USE_OPENMP
+#pragma omp atomic read
+#endif
+                zx = tmpzx;
+              }
+
+              if (tmpzy > zy)
+              {
+#ifdef USE_OPENMP
+#pragma omp atomic read
+#endif
+                zy = tmpzy;
+              }
+
+            }
+          }
+        }
+
+        iters++;
+
+      } while (zx > 1e-6 && zy > 1e-6 && iters < 1000);
+
+      if (iters >= 1000)
       {
-        double gradDx = cv->grad_z->v[0];
-        double gradDy = cv->grad_z->v[1];
-
-        cv->calculateWSEGradient();
-
-        residualsX[i] = cv->grad_z->v[0] - gradDx;
-        residualsY[i] = cv->grad_z->v[1] - gradDy;
-      }
-      else
-      {
-        residualsX[i] = 0.0;
-        residualsY[i] = 0.0;
+        printf("dh_x:%f\tdh_y:%f\tNum iters: %i\n", zx, zy, iters);
       }
     }
 
-    rx = l2Norm(residualsX, m_numCells);
-    ry = l2Norm(residualsY, m_numCells);
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+    {
+      double hx = 0.0;
+      double hy = 0.0;
 
-    iters ++;
+      int iters = 0;
 
-  }while ( rx > 1e-6 && ry > 1e-6 && iters < 500) ;
+      do
+      {
+
+        hx = 0.0;
+        hy = 0.0;
 
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-  for(int i = 0 ; i < m_numCells ; i++)
-  {
-    TriCV *cv = m_controlVolumes[i];
-    //    cv->interpolateNodeElevFromNeighbors();
-    cv->calculateNodeElevations();
-   cv->calculateEdgeDepths();
+        for (int i = 0; i < m_numContCells; i++)
+        {
+          int cvIndex = m_contCells[i];
+          TriCV *cv = m_controlVolumes[cvIndex];
+
+          double gradhx = cv->grad_h->v[0];
+          double gradhy = cv->grad_h->v[1];
+
+          cv->calculateDepthGradient();
+
+          double tmphx = fabs(cv->grad_h->v[0] - gradhx);
+          double tmphy = fabs(cv->grad_h->v[1] - gradhy);
+
+
+          {
+            if (tmphx > hx)
+            {
+#ifdef USE_OPENMP
+#pragma omp atomic read
+#endif
+              hx = tmphx;
+            }
+
+            if (tmphy > hy)
+            {
+#ifdef USE_OPENMP
+#pragma omp atomic read
+#endif
+              hy = tmphy;
+            }
+
+          }
+        }
+
+        iters++;
+
+      } while (hx > 1e-6 && hy > 1e-6 && iters < 1000);
+
+      if (iters >= 1000)
+      {
+        printf("dz_x: %f\tdz_y: %f\tNum iters: %i\n", hx, hy, iters);
+      }
+    }
   }
 
 
-  delete[] residualsX;
-  delete[] residualsY;
+#ifdef USE_OPENMP
+#pragma omp parallel for
+#endif
+  for (int i = 0; i < m_numContCells; i++)
+  {
+    int cvIndex = m_contCells[i];
+    TriCV *cv = m_controlVolumes[cvIndex];
+    cv->calculateNodeElevations();
+    cv->calculateEdgeDepths();
+  }
 
 }
 
-FVHMComponent::ErrorCode FVHMComponent::solve(const SparseMatrix &A, const double b[], double x[], double residuals[], double &relativeResidualNorm, QString &errorMessage)
+void FVHMComponent::calculateCellZCorrGradients()
+{
+  //  double zx = 0.0;
+  //  double zy = 0.0;
+
+  //  int iters = 0;
+
+  //  do
+  //  {
+
+  //    zx = 0.0;
+  //    zy = 0.0;
+
+  //#ifdef USE_OPENMP
+  //#pragma omp parallel for
+  //#endif
+  //    for (int i = 0; i < m_numCells; i++)
+  //    {
+  //      TriCV *cv = m_controlVolumes[i];
+
+  //      double gradzx = cv->grad_zcorr->v[0];
+  //      double gradzy = cv->grad_zcorr->v[1];
+
+  //      cv->calculateZCorrGradient();
+
+  //      double tmpzx = fabs(cv->grad_zcorr->v[0] - gradzx);
+  //      double tmpzy = fabs(cv->grad_zcorr->v[1] - gradzy);
+
+
+  //      {
+  //        if (tmpzx > zx)
+  //        {
+  //#ifdef USE_OPENMP
+  //#pragma omp atomic read
+  //#endif
+  //          zx = tmpzx;
+  //        }
+
+  //        if (tmpzy > zy)
+  //        {
+  //#ifdef USE_OPENMP
+  //#pragma omp atomic read
+  //#endif
+  //          zy = tmpzy;
+  //        }
+  //      }
+  //    }
+
+  //    iters++;
+
+  //  } while (zx > 1e-6 && zy > 1e-6 && iters < 1000);
+
+  //  if (iters > 300)
+  //    printf("dzcorr_x: %f\tdzcorr_y: %f\tNum iters: %i\n", zx, zy, iters);
+}
+
+FVHMComponent::ErrorCode FVHMComponent::mpiSolve(const SparseMatrix &A, const double b[], double x[],
+                                                 double residuals[], double &relativeResidualNorm, int &numIterations, QString &errorMessage)
 {
   ErrorCode solved = ErrorCode::NoError;
+  int result = 0;
+
+  if(mpiProcessRank() == 0)
+  {
+    int numMPIProcs = m_allocatedProcesses.size();
+    int rowsPerProc = A.rowCount() / numMPIProcs;
+    int remRows = A.rowCount() - rowsPerProc * numMPIProcs;
+
+    if(numMPIProcs == 1 || rowsPerProc == 0 || A.rowCount() < m_mpiSolverSplitThreshold)
+    {
+      result = solve(MPI_COMM_SELF, A,A.ilower(), A.iupper(),b,x,residuals,relativeResidualNorm, numIterations);
+    }
+    //divide and conquer
+    else
+    {
+      int start = rowsPerProc + remRows;
+
+      for(int i = 1; i < numMPIProcs ; i++)
+      {
+        int procRank =  m_allocatedProcesses[i];
+
+        int ilower = start + (i-1) * rowsPerProc;
+        int iupper = ilower + rowsPerProc - 1;
+
+        int size = 4 + (A.getDataSize(ilower,iupper) * 2) + ((iupper - ilower + 1) * 3);
+        double *serializedData = new double[size];
+
+        int counter = 0;
+        A.serializeRows(ilower,iupper, serializedData, counter);
+
+        for(int r = ilower; r <= iupper; r++)
+        {
+          serializedData[counter] = b[r]; counter++;
+        }
+
+        for(int r = ilower; r <= iupper; r++)
+        {
+          serializedData[counter] = x[r]; counter++;
+        }
+
+        MPI_Send(serializedData, size, MPI_DOUBLE, procRank, SolveEquation, MPI_COMM_WORLD);
+
+        delete[] serializedData;
+      }
+
+      result = solve(m_ComponentMPIComm, A, A.ilower(), start - 1, b, x, residuals, relativeResidualNorm, numIterations);
+
+      //recieve solutions
+      for(int i = 1; i < numMPIProcs ; i++)
+      {
+        int procRank =  m_allocatedProcesses[i];
+
+        int ilower = start + (i-1) * rowsPerProc;
+        int iupper = ilower + rowsPerProc - 1;
+
+        int bufferSize = rowsPerProc * 2 + 2;
+        double *values = new double[bufferSize];
+
+        MPI_Status status;
+        MPI_Recv(values,bufferSize,MPI_DOUBLE,procRank,SolveEquation,MPI_COMM_WORLD,&status);
+
+        result = max(result, (int)values[0]);
+        relativeResidualNorm = max(relativeResidualNorm, values[1]);
+
+        for(int j = ilower; j <= iupper; j++)
+        {
+          x[j] = values[j - ilower + 2];
+          residuals[j] = values[rowsPerProc  + j - ilower + 2];
+        }
+
+        delete[] values;
+      }
+    }
+  }
+#ifdef USE_MPI
+  else
+  {
+    result = solve(m_ComponentMPIComm, A, A.ilower(), A.iupper(), b, x, residuals, relativeResidualNorm, numIterations);
+  }
+#endif
+
+  switch (result)
+  {
+    case 0:
+      {
+        errorMessage ="";
+      }
+      break;
+    case 1:
+    case 2:
+    case 3:
+      {
+
+        char message[100];
+        HYPRE_DescribeError(result,message);
+        errorMessage = QString(message);
+        solved = ErrorCode::CriticalFailure;
+      }
+      break;
+    case 256:
+      {
+        char message[100];
+        HYPRE_DescribeError(result,message);
+        errorMessage = QString(message);
+        solved = ErrorCode::SolverFailedToConverge;
+      }
+      break;
+  }
+
+
+  return solved;
+}
+
+int FVHMComponent::solve(MPI_Comm communicator, const SparseMatrix &A, int ilower, int iupper,
+                         const double b[], double x[], double residuals[], double &relativeResidualNorm, int &numIterations)
+{
+  HYPRE_Int result = 0;
+
+  HYPRE_IJMatrix mA;
+  HYPRE_IJVector mb;
+  HYPRE_IJVector mx;
+
+  int numRows = iupper - ilower + 1;
+  int dataSize = A.getDataSize(ilower, iupper);
+
+  int *colsPerRow = new int[numRows];
+  int *rowIndexes = new int[numRows];
+  int *colIndexes = new int[dataSize];
+  double *values = new double[dataSize];
+
+  A.getColsPerRow(colsPerRow, ilower, iupper);
+  A.getRowIndexes(rowIndexes, ilower, iupper);
+  A.getColumnIndexes(colIndexes, ilower, iupper);
+  A.getValuesByRows(values, ilower, iupper);
+
+  //A matrix
+  HYPRE_IJMatrixCreate(communicator, ilower, iupper, ilower, iupper, &mA);
+
+#ifdef USE_OPENMP
+  HYPRE_IJMatrixSetOMPFlag(mA, 1);
+#endif
+
+  HYPRE_IJMatrixSetObjectType(mA, HYPRE_PARCSR);
+  HYPRE_IJMatrixInitialize(mA);
+
+  HYPRE_IJMatrixSetValues(mA, numRows, colsPerRow, rowIndexes, colIndexes, values);
+  HYPRE_IJMatrixAssemble(mA);
+
+  //B vector
+  HYPRE_IJVectorCreate(communicator, ilower, iupper, &mb);
+  HYPRE_IJVectorSetObjectType(mb, HYPRE_PARCSR);
+  HYPRE_IJVectorInitialize(mb);
+
+  HYPRE_IJVectorSetValues(mb, numRows, rowIndexes, b);
+  HYPRE_IJVectorAssemble(mb);
+
+  //X VECTOR
+  HYPRE_IJVectorCreate(communicator, ilower, iupper, &mx);
+  HYPRE_IJVectorSetObjectType(mx, HYPRE_PARCSR);
+  HYPRE_IJVectorInitialize(mx);
+
+  HYPRE_IJVectorSetValues(mx, numRows, rowIndexes, x);
+  HYPRE_IJVectorAssemble(mx);
 
   switch (m_solverType)
   {
     //PCG with AMG
     case 0:
       {
-
-        HYPRE_IJMatrix mA;
-        HYPRE_IJVector mb;
-        HYPRE_IJVector mx;
-
-        int numRows = A.numRows();
-        int *colsPerRow = A.colsPerRow();
-        int *rowIndexes = A.rows();
-
-        HYPRE_IJMatrixCreate(MPI_COMM_WORLD, 0, numRows - 1, 0, numRows - 1, &mA);
-        HYPRE_IJMatrixSetObjectType(mA, HYPRE_PARCSR);
-        HYPRE_IJMatrixInitialize(mA);
-
-#ifdef USE_OPENMP
-        HYPRE_IJMatrixSetOMPFlag(mA,1);
-#endif
-
-        HYPRE_IJVectorCreate(MPI_COMM_WORLD,0, numRows - 1,&mb);
-        HYPRE_IJVectorSetObjectType(mb, HYPRE_PARCSR);
-        HYPRE_IJVectorInitialize(mb);
-
-
-        HYPRE_IJVectorCreate(MPI_COMM_WORLD,0,numRows - 1,&mx);
-        HYPRE_IJVectorSetObjectType(mx, HYPRE_PARCSR);
-        HYPRE_IJVectorInitialize(mx);
-
-        int dataSize = A.getDataSize();
-        double* values = new double[dataSize];
-        int* colIndexes = new int[dataSize];
-
-        A.getDataByRow(values);
-        A.getColumnIndexes(colIndexes);
-
-        HYPRE_IJMatrixSetValues(mA,numRows,colsPerRow, rowIndexes ,colIndexes,values);
-        HYPRE_IJMatrixAssemble(mA);
-
-        HYPRE_IJVectorSetValues(mb,numRows, rowIndexes,b);
-        HYPRE_IJVectorAssemble(mb);
-
-        HYPRE_IJVectorSetValues(mx,numRows, rowIndexes,x);
-        HYPRE_IJVectorAssemble(mx);
-
         HYPRE_ParCSRMatrix parcsr_A;
-        HYPRE_IJMatrixGetObject(mA, (void**) &parcsr_A);
+        HYPRE_IJMatrixGetObject(mA, (void **)&parcsr_A);
 
         HYPRE_ParVector par_b;
-        HYPRE_IJVectorGetObject(mb,(void**) &par_b);
+        HYPRE_IJVectorGetObject(mb, (void **)&par_b);
 
         HYPRE_ParVector par_x;
-        HYPRE_IJVectorGetObject(mx,(void**) &par_x);
+        HYPRE_IJVectorGetObject(mx, (void **)&par_x);
 
         HYPRE_Solver solver;
         HYPRE_Solver precond;
@@ -2316,53 +2783,55 @@ FVHMComponent::ErrorCode FVHMComponent::solve(const SparseMatrix &A, const doubl
 
         HYPRE_ParVector par_residualVector;
 
-
         /* Create solver */
-        HYPRE_ParCSRPCGCreate(MPI_COMM_WORLD, &solver);
+        HYPRE_ParCSRPCGCreate(communicator, &solver);
 
         /* Set some parameters (See Reference Manual for more parameters) */
         HYPRE_PCGSetMaxIter(solver, m_solverMaximumNumberOfIterations); /* max iterations */
-        HYPRE_PCGSetTol(solver, m_solverConvergenceTol); /* conv. tolerance */
-        HYPRE_PCGSetTwoNorm(solver, 1); /* use the two norm as the stopping criteria */
-        HYPRE_PCGSetPrintLevel(solver, 0); /* print solve info */
-        HYPRE_PCGSetLogging(solver, 1); /* needed to get run info later */
+        HYPRE_PCGSetTol(solver, m_solverConvergenceTol);                /* conv. tolerance */
+        HYPRE_PCGSetTwoNorm(solver, 1);                                 /* use the two norm as the stopping criteria */
+        HYPRE_PCGSetPrintLevel(solver, 0);                              /* print solve info */
+        HYPRE_PCGSetLogging(solver, 1);                                 /* needed to get run info later */
 
         /* Now set up the AMG preconditioner and specify any parameters */
         HYPRE_BoomerAMGCreate(&precond);
         HYPRE_BoomerAMGSetPrintLevel(precond, 0); /* print amg solution info */
-        HYPRE_BoomerAMGSetCoarsenType(precond, 6);
+        HYPRE_BoomerAMGSetCoarsenType(precond, 8);
 
 #ifdef USE_OPENMP
-        HYPRE_BoomerAMGSetRelaxType(precond, 5); /* Sym G.S./Jacobi hybrid */
+        HYPRE_BoomerAMGSetRelaxType(precond, 0); /* Sym G.S./Jacobi hybrid */
 #else
         HYPRE_BoomerAMGSetRelaxType(precond, 6);
 #endif
 
         HYPRE_BoomerAMGSetNumSweeps(precond, 1);
         HYPRE_BoomerAMGSetMaxIter(precond, m_solverAMGPreconditionerNumberOfIterations); /* do only one iteration! */
-        HYPRE_BoomerAMGSetTol(precond, 0.0); /* conv. tolerance zero */
+        HYPRE_BoomerAMGSetTol(precond, 0.0);                                             /* conv. tolerance zero */
 
         /* Set the FlexGMRES preconditioner */
-        HYPRE_PCGSetPrecond(solver, (HYPRE_PtrToSolverFcn) HYPRE_BoomerAMGSolve,
-                            (HYPRE_PtrToSolverFcn) HYPRE_BoomerAMGSetup, precond);
+        HYPRE_PCGSetPrecond(solver, (HYPRE_PtrToSolverFcn)HYPRE_BoomerAMGSolve,
+                            (HYPRE_PtrToSolverFcn)HYPRE_BoomerAMGSetup, precond);
 
         /* Now setup and solve! */
         HYPRE_ParCSRPCGSetup(solver, parcsr_A, par_b, par_x);
 
-        HYPRE_Int result = HYPRE_ParCSRPCGSolve(solver, parcsr_A, par_b, par_x);
+        result = HYPRE_ParCSRPCGSolve(solver, parcsr_A, par_b, par_x);
+
+        /*Get number of iterations used*/
+        HYPRE_PCGGetNumIterations(solver, &numIterations);
 
         /*Now copy solution! */
-        //    HYPRE_IJVectorPrint(mx,"/Users/calebbuahin/Documents/Projects/HydroCouple/FVHMComponent/examples/XVector.txt");
-        HYPRE_IJVectorGetValues(mx,numRows,rowIndexes,x);
+        HYPRE_IJVectorGetValues(mx, numRows, rowIndexes, x);
 
         /*Copy residuals! */
-        HYPRE_FlexGMRESGetResidual(solver, (void**)&par_residualVector);
-        double* residualValues = hypre_VectorData(hypre_ParVectorLocalVector(par_residualVector));
+        HYPRE_FlexGMRESGetResidual(solver, (void **)&par_residualVector);
+
+        double *residualValues = hypre_VectorData(hypre_ParVectorLocalVector(par_residualVector));
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-        for(int i = 0; i < numRows; i++)
+        for (int i = 0; i < numRows; i++)
         {
           residuals[i] = residualValues[i];
         }
@@ -2371,111 +2840,22 @@ FVHMComponent::ErrorCode FVHMComponent::solve(const SparseMatrix &A, const doubl
         HYPRE_PCGGetNumIterations(solver, &num_iterations);
         HYPRE_PCGGetFinalRelativeResidualNorm(solver, &relativeResidualNorm);
 
-        switch (result)
-        {
-          case 0:
-            {
-              errorMessage ="";
-            }
-            break;
-          case 1:
-          case 2:
-          case 3:
-            {
-              if(m_outputDir.exists())
-              {
-                HYPRE_IJMatrixPrint(mA, qPrintable(m_outputDir.absolutePath() + "/AMatrix.txt"));
-                HYPRE_IJVectorPrint(mb, qPrintable(m_outputDir.absolutePath() + "/BVector.txt"));
-                HYPRE_IJVectorPrint(mx, qPrintable(m_outputDir.absolutePath() + "/XVector.txt"));
-              }
-
-              char message[100];
-              HYPRE_DescribeError(result,message);
-              errorMessage = QString(message);
-              solved = ErrorCode::CriticalFailure;
-            }
-            break;
-          case 256:
-            {
-              if(m_outputDir.exists())
-              {
-                HYPRE_IJMatrixPrint(mA, qPrintable(m_outputDir.absolutePath() + "/AMatrix.txt"));
-                HYPRE_IJVectorPrint(mb, qPrintable(m_outputDir.absolutePath() + "/BVector.txt"));
-                HYPRE_IJVectorPrint(mx, qPrintable(m_outputDir.absolutePath() + "/XVector.txt"));
-              }
-
-              char message[100];
-              HYPRE_DescribeError(result,message);
-              errorMessage = QString(message);
-              solved = ErrorCode::SolverFailedToConverge;
-            }
-            break;
-        }
-
         /* Destroy solver and preconditioner */
         HYPRE_ParCSRPCGDestroy(solver);
         HYPRE_BoomerAMGDestroy(precond);
-
-        HYPRE_IJMatrixDestroy(mA);
-        HYPRE_IJVectorDestroy(mb);
-        HYPRE_IJVectorDestroy(mx);
-
-        delete[] values;
-        delete[] colIndexes;
       }
       break;
       //GMRES and AMG
     case 1:
       {
-        HYPRE_IJMatrix mA;
-        HYPRE_IJVector mb;
-        HYPRE_IJVector mx;
-
-        int numRows = A.numRows();
-        int *colsPerRow = A.colsPerRow();
-        int *rowIndexes = A.rows();
-
-        HYPRE_IJMatrixCreate(MPI_COMM_WORLD, 0, numRows - 1, 0, numRows - 1, &mA);
-        HYPRE_IJMatrixSetObjectType(mA, HYPRE_PARCSR);
-        HYPRE_IJMatrixInitialize(mA);
-
-#ifdef USE_OPENMP
-        HYPRE_IJMatrixSetOMPFlag(mA,1);
-#endif
-
-        HYPRE_IJVectorCreate(MPI_COMM_WORLD,0, numRows - 1,&mb);
-        HYPRE_IJVectorSetObjectType(mb, HYPRE_PARCSR);
-        HYPRE_IJVectorInitialize(mb);
-
-
-        HYPRE_IJVectorCreate(MPI_COMM_WORLD,0,numRows - 1,&mx);
-        HYPRE_IJVectorSetObjectType(mx, HYPRE_PARCSR);
-        HYPRE_IJVectorInitialize(mx);
-
-        int dataSize = A.getDataSize();
-        double* values = new double[dataSize];
-        int* colIndexes = new int[dataSize];
-
-        A.getDataByRow(values);
-        A.getColumnIndexes(colIndexes);
-
-        HYPRE_IJMatrixSetValues(mA,numRows,colsPerRow, rowIndexes ,colIndexes,values);
-        HYPRE_IJMatrixAssemble(mA);
-
-        HYPRE_IJVectorSetValues(mb,numRows, rowIndexes,b);
-        HYPRE_IJVectorAssemble(mb);
-
-        HYPRE_IJVectorSetValues(mx,numRows, rowIndexes,x);
-        HYPRE_IJVectorAssemble(mx);
-
         HYPRE_ParCSRMatrix parcsr_A;
-        HYPRE_IJMatrixGetObject(mA, (void**) &parcsr_A);
+        HYPRE_IJMatrixGetObject(mA, (void **)&parcsr_A);
 
         HYPRE_ParVector par_b;
-        HYPRE_IJVectorGetObject(mb,(void**) &par_b);
+        HYPRE_IJVectorGetObject(mb, (void **)&par_b);
 
         HYPRE_ParVector par_x;
-        HYPRE_IJVectorGetObject(mx,(void**) &par_x);
+        HYPRE_IJVectorGetObject(mx, (void **)&par_x);
 
         HYPRE_Solver solver;
         HYPRE_Solver precond;
@@ -2484,279 +2864,19 @@ FVHMComponent::ErrorCode FVHMComponent::solve(const SparseMatrix &A, const doubl
 
         HYPRE_ParVector par_residualVector;
 
-        HYPRE_ParCSRFlexGMRESCreate(MPI_COMM_WORLD, &solver);
+        HYPRE_ParCSRFlexGMRESCreate(communicator, &solver);
 
         /* Set some parameters (See Reference Manual for more parameters) */
         //HYPRE_FlexGMRESSetKDim(solver, 30);
         HYPRE_FlexGMRESSetMaxIter(solver, m_solverMaximumNumberOfIterations); /* max iterations */
-        HYPRE_FlexGMRESSetTol(solver, m_solverConvergenceTol); /* conv. tolerance */
-        HYPRE_FlexGMRESSetPrintLevel(solver, 0); /* print solve info */
-        HYPRE_FlexGMRESSetLogging(solver, 1); /* needed to get run info later */
+        HYPRE_FlexGMRESSetTol(solver, m_solverConvergenceTol);                /* conv. tolerance */
+        HYPRE_FlexGMRESSetPrintLevel(solver, 0);                              /* print solve info */
+        HYPRE_FlexGMRESSetLogging(solver, 1);                                 /* needed to get run info later */
 
         /* Now set up the AMG preconditioner and specify any parameters */
         HYPRE_BoomerAMGCreate(&precond);
         HYPRE_BoomerAMGSetPrintLevel(precond, 0); /* print amg solution info */
-        HYPRE_BoomerAMGSetCoarsenType(precond, 6);
-
-#ifdef USE_OPENMP
-        HYPRE_BoomerAMGSetRelaxType(precond, 5);
-#else
-        HYPRE_BoomerAMGSetRelaxType(precond, 6);/* Sym G.S./Jacobi hybrid */
-#endif
-
-        HYPRE_BoomerAMGSetNumSweeps(precond, 1);
-        HYPRE_BoomerAMGSetMaxIter(precond, m_solverAMGPreconditionerNumberOfIterations); /* do only one iteration! */
-        HYPRE_BoomerAMGSetTol(precond, 0.0); /* conv. tolerance zero */
-
-        /* Set the FlexGMRES preconditioner */
-        HYPRE_FlexGMRESSetPrecond(solver, (HYPRE_PtrToSolverFcn) HYPRE_BoomerAMGSolve,
-                                  (HYPRE_PtrToSolverFcn) HYPRE_BoomerAMGSetup, precond);
-
-        /* Now setup and solve! */
-        HYPRE_ParCSRFlexGMRESSetup(solver, parcsr_A, par_b, par_x);
-
-        HYPRE_Int result = HYPRE_ParCSRFlexGMRESSolve(solver, parcsr_A, par_b, par_x);
-
-
-        /*Now copy solution! */
-        HYPRE_IJVectorGetValues(mx,numRows,rowIndexes,x);
-
-        /*Copy residuals! */
-        HYPRE_FlexGMRESGetResidual(solver, (void**)&par_residualVector);
-        double* residualValues = hypre_VectorData(hypre_ParVectorLocalVector(par_residualVector));
-
-#ifdef USE_OPENMP
-#pragma omp parallel for
-#endif
-        for(int i = 0; i < numRows; i++)
-        {
-          residuals[i] = residualValues[i];
-        }
-
-        /* Run info - needed logging turned on */
-        HYPRE_FlexGMRESGetNumIterations(solver, &num_iterations);
-        HYPRE_FlexGMRESGetFinalRelativeResidualNorm(solver, &relativeResidualNorm);
-
-        switch (result)
-        {
-          case 0:
-            {
-              errorMessage ="";
-            }
-            break;
-          case 1:
-          case 2:
-          case 3:
-            {
-
-              if(m_outputDir.exists())
-              {
-                HYPRE_IJMatrixPrint(mA, qPrintable(m_outputDir.absolutePath() + "/AMatrix.txt"));
-                HYPRE_IJVectorPrint(mb, qPrintable(m_outputDir.absolutePath() + "/BVector.txt"));
-                HYPRE_IJVectorPrint(mx, qPrintable(m_outputDir.absolutePath() + "/XVector.txt"));
-              }
-
-              char message[100];
-              HYPRE_DescribeError(result,message);
-              errorMessage = QString(message);
-              solved = ErrorCode::CriticalFailure;
-            }
-            break;
-          case 256:
-            {
-              if(m_outputDir.exists())
-              {
-                HYPRE_IJMatrixPrint(mA, qPrintable(m_outputDir.absolutePath() + "/AMatrix.txt"));
-                HYPRE_IJVectorPrint(mb, qPrintable(m_outputDir.absolutePath() + "/BVector.txt"));
-                HYPRE_IJVectorPrint(mx, qPrintable(m_outputDir.absolutePath() + "/XVector.txt"));
-              }
-
-              char message[100];
-              HYPRE_DescribeError(result,message);
-              errorMessage = QString(message);
-              solved = ErrorCode::SolverFailedToConverge;
-            }
-            break;
-        }
-
-        /* Destroy solver and preconditioner */
-        HYPRE_ParCSRFlexGMRESDestroy(solver);
-        HYPRE_BoomerAMGDestroy(precond);
-
-        HYPRE_IJMatrixDestroy(mA);
-        HYPRE_IJVectorDestroy(mb);
-        HYPRE_IJVectorDestroy(mx);
-
-        delete[] values;
-        delete[] colIndexes;
-      }
-      break;
-
-#ifdef USE_SUITESPARSE
-      //SUITE SPARSE
-    case 2:
-      {
-        //        cholmod_common Common, *cc ;
-        //        cholmod_sparse *AA ;
-        //        cholmod_dense *XX, *BB, *Residual ;
-
-        //        int dataSize = A.getDataSize();
-        //        int numRows = A.numRows();
-
-        //        double rnorm, one [2] = {1,0}, minusone [2] = {-1,0};
-
-        //        // start CHOLMOD
-        //        cc = &Common ;
-        //        cholmod_l_start (cc) ;
-
-        //        // load A
-        //        AA = cholmod_allocate_sparse(numRows, numRows, dataSize, FALSE, FALSE, 0, CHOLMOD_REAL, cc);
-        //        int *cpoints = AA->p;
-        //        int *rowIndexes = AA->i;
-        //        int *nzLoc = AA->nz;
-        //        double* values = AA->x;
-
-        //        A.getRowIndexes(rowIndexes,cpoints,nzLoc);
-        //        A.getDataByColumn(values);
-
-
-        //        BB = cholmod_allocate_dense(numRows, 1, numRows, CHOLMOD_REAL, cc);
-
-        //#ifdef USE_OPENMP
-        //#pragma omp parallel for
-        //#endif
-        //        for(int i = 0; i < numRows; i++)
-        //        {
-        //          ((double*)BB->x)[i] = b[i];
-        //        }
-
-
-        //        // X = A\B
-        //        XX = SuiteSparseQR<double>(AA, BB, cc) ;
-
-
-        //        // rnorm = norm (B-A*X)
-        //        Residual = cholmod_l_copy_dense (BB, cc) ;
-        //        cholmod_l_sdmult (AA, 0, minusone, one, XX, Residual, cc);
-
-        //        double *castRes = (double*) Residual->x;
-        //        double *castX = (double*) XX->x;
-
-        //#ifdef USE_OPENMP
-        //#pragma omp parallel for
-        //#endif
-        //        for(int i = 0; i < numRows; i++)
-        //        {
-        //          residuals[i] = castRes[i];
-        //          x[i] = castX[i];
-        //        }
-
-
-        //        rnorm = cholmod_l_norm_dense (Residual, 2, cc);
-        //        relativeResidualNorm = rnorm;
-
-        //        printf ("2-norm of residual: %8.1e\n", rnorm) ;
-        //        printf ("rank %ld\n", cc->SPQR_istat [4]);
-        //        // free everything and finish CHOLMOD
-        //        cholmod_l_free_dense (&Residual, cc) ;
-        //        cholmod_l_free_sparse (&AA, cc) ;
-        //        cholmod_l_free_dense (&XX, cc) ;
-        //        cholmod_l_free_dense (&BB, cc) ;
-      }
-      break;
-      //KLU
-    case 3:
-      {
-
-      }
-      break;
-      //CHOLMOD
-    case 4:
-      {
-
-
-      }
-      break;
-      //UMFPACK
-    case 5:
-      {
-
-
-      }
-      break;
-#endif
-      //GMRES and AMG
-    default:
-      {
-        HYPRE_IJMatrix mA;
-        HYPRE_IJVector mb;
-        HYPRE_IJVector mx;
-
-        int numRows = A.numRows();
-        int *colsPerRow = A.colsPerRow();
-        int *rowIndexes = A.rows();
-
-        HYPRE_IJMatrixCreate(MPI_COMM_WORLD, 0, numRows - 1, 0, numRows - 1, &mA);
-        HYPRE_IJMatrixSetObjectType(mA, HYPRE_PARCSR);
-        HYPRE_IJMatrixInitialize(mA);
-
-#ifdef USE_OPENMP
-        HYPRE_IJMatrixSetOMPFlag(mA,1);
-#endif
-
-        HYPRE_IJVectorCreate(MPI_COMM_WORLD,0, numRows - 1,&mb);
-        HYPRE_IJVectorSetObjectType(mb, HYPRE_PARCSR);
-        HYPRE_IJVectorInitialize(mb);
-
-
-        HYPRE_IJVectorCreate(MPI_COMM_WORLD,0,numRows - 1,&mx);
-        HYPRE_IJVectorSetObjectType(mx, HYPRE_PARCSR);
-        HYPRE_IJVectorInitialize(mx);
-
-        int dataSize = A.getDataSize();
-        double* values = new double[dataSize];
-        int* colIndexes = new int[dataSize];
-
-        A.getDataByRow(values);
-        A.getColumnIndexes(colIndexes);
-
-        HYPRE_IJMatrixSetValues(mA,numRows,colsPerRow, rowIndexes ,colIndexes,values);
-        HYPRE_IJMatrixAssemble(mA);
-
-        HYPRE_IJVectorSetValues(mb,numRows, rowIndexes,b);
-        HYPRE_IJVectorAssemble(mb);
-
-        HYPRE_IJVectorSetValues(mx,numRows, rowIndexes,x);
-        HYPRE_IJVectorAssemble(mx);
-
-        HYPRE_ParCSRMatrix parcsr_A;
-        HYPRE_IJMatrixGetObject(mA, (void**) &parcsr_A);
-
-        HYPRE_ParVector par_b;
-        HYPRE_IJVectorGetObject(mb,(void**) &par_b);
-
-        HYPRE_ParVector par_x;
-        HYPRE_IJVectorGetObject(mx,(void**) &par_x);
-
-        HYPRE_Solver solver;
-        HYPRE_Solver precond;
-
-        int num_iterations;
-
-        HYPRE_ParVector par_residualVector;
-
-        HYPRE_ParCSRFlexGMRESCreate(MPI_COMM_WORLD, &solver);
-
-        /* Set some parameters (See Reference Manual for more parameters) */
-        HYPRE_FlexGMRESSetMaxIter(solver, m_solverMaximumNumberOfIterations); /* max iterations */
-        HYPRE_FlexGMRESSetTol(solver, m_solverConvergenceTol); /* conv. tolerance */
-        HYPRE_FlexGMRESSetPrintLevel(solver, 0); /* print solve info */
-        HYPRE_FlexGMRESSetLogging(solver, 1); /* needed to get run info later */
-
-        /* Now set up the AMG preconditioner and specify any parameters */
-        HYPRE_BoomerAMGCreate(&precond);
-        HYPRE_BoomerAMGSetPrintLevel(precond, 0); /* print amg solution info */
-        HYPRE_BoomerAMGSetCoarsenType(precond, 6);
+        HYPRE_BoomerAMGSetCoarsenType(precond, 8);
 
 #ifdef USE_OPENMP
         HYPRE_BoomerAMGSetRelaxType(precond, 5); /* Sym G.S./Jacobi hybrid */
@@ -2766,30 +2886,32 @@ FVHMComponent::ErrorCode FVHMComponent::solve(const SparseMatrix &A, const doubl
 
         HYPRE_BoomerAMGSetNumSweeps(precond, 1);
         HYPRE_BoomerAMGSetMaxIter(precond, m_solverAMGPreconditionerNumberOfIterations); /* do only one iteration! */
-        HYPRE_BoomerAMGSetTol(precond, 0.0); /* conv. tolerance zero */
+        HYPRE_BoomerAMGSetTol(precond, 0.0);                                             /* conv. tolerance zero */
 
         /* Set the FlexGMRES preconditioner */
-        HYPRE_FlexGMRESSetPrecond(solver, (HYPRE_PtrToSolverFcn) HYPRE_BoomerAMGSolve,
-                                  (HYPRE_PtrToSolverFcn) HYPRE_BoomerAMGSetup, precond);
+        HYPRE_FlexGMRESSetPrecond(solver, (HYPRE_PtrToSolverFcn)HYPRE_BoomerAMGSolve,
+                                  (HYPRE_PtrToSolverFcn)HYPRE_BoomerAMGSetup, precond);
 
         /* Now setup and solve! */
         HYPRE_ParCSRFlexGMRESSetup(solver, parcsr_A, par_b, par_x);
 
-        HYPRE_Int result = HYPRE_ParCSRFlexGMRESSolve(solver, parcsr_A, par_b, par_x);
+        result = HYPRE_ParCSRFlexGMRESSolve(solver, parcsr_A, par_b, par_x);
 
+
+        /*Get number of iterations used*/
+        HYPRE_FlexGMRESGetNumIterations(solver, &numIterations);
 
         /*Now copy solution! */
-        //    HYPRE_IJVectorPrint(mx,"/Users/calebbuahin/Documents/Projects/HydroCouple/FVHMComponent/examples/basic_tests/sloping/XVector.txt");
-        HYPRE_IJVectorGetValues(mx,numRows,rowIndexes,x);
+        HYPRE_IJVectorGetValues(mx, numRows, rowIndexes, x);
 
         /*Copy residuals! */
-        HYPRE_FlexGMRESGetResidual(solver, (void**)&par_residualVector);
-        double* residualValues = hypre_VectorData(hypre_ParVectorLocalVector(par_residualVector));
+        HYPRE_FlexGMRESGetResidual(solver, (void **)&par_residualVector);
+        double *residualValues = hypre_VectorData(hypre_ParVectorLocalVector(par_residualVector));
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-        for(int i = 0; i < numRows; i++)
+        for (int i = 0; i < numRows; i++)
         {
           residuals[i] = residualValues[i];
         }
@@ -2798,64 +2920,121 @@ FVHMComponent::ErrorCode FVHMComponent::solve(const SparseMatrix &A, const doubl
         HYPRE_FlexGMRESGetNumIterations(solver, &num_iterations);
         HYPRE_FlexGMRESGetFinalRelativeResidualNorm(solver, &relativeResidualNorm);
 
-        switch (result)
+        /* Destroy solver and preconditioner */
+        HYPRE_ParCSRFlexGMRESDestroy(solver);
+        HYPRE_BoomerAMGDestroy(precond);
+      }
+      break;
+      //GMRES and AMG
+    default:
+      {
+
+        HYPRE_ParCSRMatrix parcsr_A;
+        HYPRE_IJMatrixGetObject(mA, (void **)&parcsr_A);
+
+        HYPRE_ParVector par_b;
+        HYPRE_IJVectorGetObject(mb, (void **)&par_b);
+
+        HYPRE_ParVector par_x;
+        HYPRE_IJVectorGetObject(mx, (void **)&par_x);
+
+        HYPRE_Solver solver;
+        HYPRE_Solver precond;
+
+        int num_iterations;
+
+        HYPRE_ParVector par_residualVector;
+
+        HYPRE_ParCSRFlexGMRESCreate(communicator, &solver);
+
+        /* Set some parameters (See Reference Manual for more parameters) */
+        HYPRE_FlexGMRESSetMaxIter(solver, m_solverMaximumNumberOfIterations); /* max iterations */
+        HYPRE_FlexGMRESSetTol(solver, m_solverConvergenceTol);                /* conv. tolerance */
+        HYPRE_FlexGMRESSetPrintLevel(solver, 0);                              /* print solve info */
+        HYPRE_FlexGMRESSetLogging(solver, 1);                                 /* needed to get run info later */
+
+        /* Now set up the AMG preconditioner and specify any parameters */
+        HYPRE_BoomerAMGCreate(&precond);
+        HYPRE_BoomerAMGSetPrintLevel(precond, 0); /* print amg solution info */
+        HYPRE_BoomerAMGSetCoarsenType(precond, 8);
+
+#ifdef USE_OPENMP
+        HYPRE_BoomerAMGSetRelaxType(precond, 5); /* Sym G.S./Jacobi hybrid */
+#else
+        HYPRE_BoomerAMGSetRelaxType(precond, 6);
+#endif
+        HYPRE_BoomerAMGSetNumSweeps(precond, 1);
+        HYPRE_BoomerAMGSetMaxIter(precond, m_solverAMGPreconditionerNumberOfIterations); /* do only one iteration! */
+        HYPRE_BoomerAMGSetTol(precond, 0.0);                                             /* conv. tolerance zero */
+
+        /* Set the FlexGMRES preconditioner */
+        HYPRE_FlexGMRESSetPrecond(solver, (HYPRE_PtrToSolverFcn)HYPRE_BoomerAMGSolve,
+                                  (HYPRE_PtrToSolverFcn)HYPRE_BoomerAMGSetup, precond);
+
+        /* Now setup and solve! */
+        HYPRE_ParCSRFlexGMRESSetup(solver, parcsr_A, par_b, par_x);
+
+        result = HYPRE_ParCSRFlexGMRESSolve(solver, parcsr_A, par_b, par_x);
+
+        /*Get number of iterations used*/
+        HYPRE_FlexGMRESGetNumIterations(solver, &numIterations);
+
+        /*Now copy solution! */
+        //    HYPRE_IJVectorPrint(mx,"/Users/calebbuahin/Documents/Projects/HydroCouple/FVHMComponent/examples/basic_tests/sloping/XVector.txt");
+        HYPRE_IJVectorGetValues(mx, numRows, rowIndexes, x);
+
+        /*Copy residuals! */
+        HYPRE_FlexGMRESGetResidual(solver, (void **)&par_residualVector);
+        double *residualValues = hypre_VectorData(hypre_ParVectorLocalVector(par_residualVector));
+
+#ifdef USE_OPENMP
+#pragma omp parallel for
+#endif
+        for (int i = 0; i < numRows; i++)
         {
-          case 0:
-            {
-              errorMessage ="";
-            }
-            break;
-          case 1:
-          case 2:
-          case 3:
-            {
-              if(m_outputDir.exists())
-              {
-                HYPRE_IJMatrixPrint(mA, qPrintable(m_outputDir.absolutePath() + "/AMatrix.txt"));
-                HYPRE_IJVectorPrint(mb, qPrintable(m_outputDir.absolutePath() + "/BVector.txt"));
-                HYPRE_IJVectorPrint(mx, qPrintable(m_outputDir.absolutePath() + "/XVector.txt"));
-              }
-
-              char message[100];
-              HYPRE_DescribeError(result,message);
-              errorMessage = QString(message);
-              solved = ErrorCode::CriticalFailure;
-            }
-            break;
-          case 256:
-            {
-              if(m_outputDir.exists())
-              {
-                HYPRE_IJMatrixPrint(mA, qPrintable(m_outputDir.absolutePath() + "/AMatrix.txt"));
-                HYPRE_IJVectorPrint(mb, qPrintable(m_outputDir.absolutePath() + "/BVector.txt"));
-                HYPRE_IJVectorPrint(mx, qPrintable(m_outputDir.absolutePath() + "/XVector.txt"));
-              }
-
-              char message[100];
-              HYPRE_DescribeError(result,message);
-              errorMessage = QString(message);
-              solved = ErrorCode::SolverFailedToConverge;
-            }
-            break;
+          residuals[i] = residualValues[i];
         }
+
+        /* Run info - needed logging turned on */
+        HYPRE_FlexGMRESGetNumIterations(solver, &num_iterations);
+        HYPRE_FlexGMRESGetFinalRelativeResidualNorm(solver, &relativeResidualNorm);
 
         /* Destroy solver and preconditioner */
         HYPRE_ParCSRFlexGMRESDestroy(solver);
         HYPRE_BoomerAMGDestroy(precond);
-
-        HYPRE_IJMatrixDestroy(mA);
-        HYPRE_IJVectorDestroy(mb);
-        HYPRE_IJVectorDestroy(mx);
-
-        delete[] values;
-        delete[] colIndexes;
       }
       break;
   }
 
+  switch (result)
+  {
+    case 1:
+    case 2:
+    case 3:
+    case 256:
+      {
+        if (m_outputDir.exists())
+        {
+          HYPRE_IJMatrixPrint(mA, qPrintable(m_outputDir.absolutePath() + "/AMatrix_" + QString::number(mpiProcessRank()) + ".txt"));
+          HYPRE_IJVectorPrint(mb, qPrintable(m_outputDir.absolutePath() + "/BVector_" + QString::number(mpiProcessRank()) + ".txt"));
+          HYPRE_IJVectorPrint(mx, qPrintable(m_outputDir.absolutePath() + "/XVector_" + QString::number(mpiProcessRank()) + ".txt"));
+        }
+      }
+      break;
+  }
 
+  HYPRE_IJMatrixDestroy(mA);
+  HYPRE_IJVectorDestroy(mb);
+  HYPRE_IJVectorDestroy(mx);
 
-  return solved;
+  delete[] colsPerRow;
+  delete[] rowIndexes;
+  delete[] colIndexes;
+  delete[] values;
+
+  //  printf("exiting solver \n");
+
+  return result;
 }
 
 double FVHMComponent::sign(double value)
@@ -2873,11 +3052,11 @@ double FVHMComponent::l2Norm(const double residuals[], int length)
   for(int i = 0; i < length ; i++)
   {
     double v = residuals[i];
-    v *=v;
+
 #ifdef USE_OPENMP
-#pragma omp critical
+#pragma omp atomic
 #endif
-    value += v;
+    value += v * v;
   }
 
   return value > 0.0 ? sqrt(value) : 0.0;

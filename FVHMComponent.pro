@@ -1,16 +1,18 @@
-#-------------------------------------------------
-#
-# Project created by QtCreator 2016-06-06T10:49:44
-#
-#-------------------------------------------------
+#Author Caleb Amoa Buahin
+#Email caleb.buahin@gmail.com
+#Date 2016
+#License GNU General Public License (see <http://www.gnu.org/licenses/> for details).
+
+
 TARGET = FVHMComponent
 QT       -= gui
 
 DEFINES += FVHMCOMPONENT_LIBRARY
 DEFINES += UTAH_CHPC
-#DEFINES += USE_MPI
-#DEFINES += USE_OPENMP
-DEFINES += USE_SUITESPARSE
+DEFINES += USE_OPENMP
+#DEFINES += USE_HYPRE_OPENMP
+DEFINES += USE_MPI
+#DEFINES += USE_SUITESPARSE
 
 CONFIG += c++11
 CONFIG += debug_and_release
@@ -78,29 +80,52 @@ SOURCES += ./src/stdafx.cpp \
            ./src/cvwseoutput.cpp \
            ./src/cvdepthoutput.cpp \
            ./src/initialwsebc.cpp \
-    src/criticaldepthoutflowbc.cpp \
-    src/edgefluxesio.cpp
+           ./src/criticaldepthoutflowbc.cpp \
+           ./src/edgefluxesio.cpp
 
 
 macx{
 
     INCLUDEPATH += /usr/local/include \
+                   ./../HYPRE/hypre-2.11.2/include \
                    /usr/local/include/libiomp
 
-    LIBS += -L/usr/local/lib -lnetcdf_c++4 \
-            -L/usr/local/lib/ -lHYPRE
+    LIBS += -L/usr/local/lib -lnetcdf-cxx4 \
+            -L./../HYPRE/hypre-2.11.2/lib -lHYPRE
 
     contains(DEFINES,USE_OPENMP){
 
-        QMAKE_CC=clang-omp
-        QMAKE_CXX=clang-omp++
+        QMAKE_CC = /usr/local/opt/llvm/bin/clang
+        QMAKE_CXX = /usr/local/opt/llvm/bin/clang++
+        QMAKE_LINK = /usr/local/opt/llvm/bin/clang++
 
         QMAKE_CFLAGS+= -fopenmp
         QMAKE_LFLAGS+= -fopenmp
         QMAKE_CXXFLAGS+= -fopenmp
 
-        INCLUDEPATH += /usr/local/include/libiomp
-        LIBS += -L/usr/local/lib/ -liomp5
+        INCLUDEPATH += /usr/local/opt/llvm/lib/clang/5.0.0/include
+        LIBS += -L /usr/local/opt/llvm/lib -lomp
+
+
+      message("OpenMP enabled")
+
+    } else {
+      message("OpenMP disabled")
+    }
+
+
+    contains(DEFINES,USE_HYPRE_OPENMP){
+
+        QMAKE_CC = /usr/local/opt/llvm/bin/clang
+        QMAKE_CXX = /usr/local/opt/llvm/bin/clang++
+        QMAKE_LINK = /usr/local/opt/llvm/bin/clang++
+
+        QMAKE_CFLAGS+= -fopenmp
+        QMAKE_LFLAGS+= -fopenmp
+        QMAKE_CXXFLAGS+= -fopenmp
+
+        INCLUDEPATH += /usr/local/opt/llvm/lib/clang/5.0.0/include
+        LIBS += -L /usr/local/opt/llvm/lib -lomp
 
 
       message("OpenMP enabled")
@@ -111,9 +136,9 @@ macx{
 
     contains(DEFINES,USE_MPI){
 
-        QMAKE_CC = mpicc
-        QMAKE_CXX = mpic++
-        QMAKE_LINK = mpic++
+        QMAKE_CC = /usr/local/bin/mpicc
+        QMAKE_CXX = /usr/local/bin/mpicxx
+        QMAKE_LINK = /usr/local/bin/mpicxx
 
         QMAKE_CFLAGS += $$system(mpicc --showme:compile)
         QMAKE_CXXFLAGS += $$system(mpic++ --showme:compile)
@@ -142,28 +167,16 @@ LIBS += -L/usr/lib/ogdi -lgdal \
          INCLUDEPATH += /uufs/chpc.utah.edu/sys/installdir/hdf5/1.8.17-c7/include \
                         /uufs/chpc.utah.edu/sys/installdir/netcdf-c/4.3.3.1/include \
                         /uufs/chpc.utah.edu/sys/installdir/netcdf-cxx/4.3.0-c7/include \
-                        ../hypre/build/include 
+                        ./../HYPRE/hypre-2.11.2/include
 
 
          LIBS += -L/uufs/chpc.utah.edu/sys/installdir/hdf5/1.8.17-c7/lib -lhdf5 \
                  -L/uufs/chpc.utah.edu/sys/installdir/netcdf-cxx/4.3.0-c7/lib -lnetcdf_c++4 \
-                 -L../hypre/build/lib -lHYPRE
+                 -L./../HYPRE/hypre-2.11.2/lib -lHYPRE
 
          message("Compiling on CHPC")
     }
 
-    contains(DEFINES,USE_OPENMP){
-
-    QMAKE_CFLAGS += -fopenmp
-    QMAKE_LFLAGS += -fopenmp
-    QMAKE_CXXFLAGS += -fopenmp
-
-    LIBS += -L/usr/lib/x86_64-linux-gnu -lgomp
-
-      message("OpenMP enabled")
-    } else {
-      message("OpenMP disabled")
-    }
 
     contains(DEFINES,USE_MPI){
 
@@ -181,6 +194,19 @@ LIBS += -L/usr/lib/ogdi -lgdal \
     } else {
       message("MPI disabled")
     }
+
+    contains(DEFINES,USE_OPENMP){
+
+    QMAKE_CFLAGS += -fopenmp
+    QMAKE_LFLAGS += -fopenmp
+    QMAKE_CXXFLAGS += -fopenmp
+
+    LIBS += -L/usr/lib/x86_64-linux-gnu -lgomp
+
+      message("OpenMP enabled")
+    } else {
+      message("OpenMP disabled")
+    }
 }
 
 CONFIG(debug, debug|release) {
@@ -192,7 +218,7 @@ CONFIG(debug, debug|release) {
    UI_DIR = $$DESTDIR/.ui
 
    macx{
-    LIBS += -L./../HydroCoupleSDK/build/debug -lHydroCoupleSDK.1.0.0
+    LIBS += -L./../HydroCoupleSDK/build/debug -lHydroCoupleSDK
    }
 
    linux{
@@ -213,7 +239,7 @@ CONFIG(release, debug|release) {
     UI_DIR = $$RELEASE_EXTRAS/.ui
 
    macx{
-    LIBS += -L./../HydroCoupleSDK/lib -lHydroCoupleSDK.1.0.0
+    LIBS += -L./../HydroCoupleSDK/lib -lHydroCoupleSDK
    }
 
    linux{
