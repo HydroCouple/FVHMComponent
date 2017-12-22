@@ -98,224 +98,228 @@ void WSEBC::prepare()
 
 void WSEBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
 {
-  bool applied = false;
-  std::vector<TriCV*> & controlVolumes = m_modelComponent->m_controlVolumes;
 
-  if(m_times.size())
+  if(m_geometries.size() && m_edges.size())
   {
-    int index = findDateTimeIndex(dateTime);
+    bool applied = false;
+    std::vector<TriCV*> & controlVolumes = m_modelComponent->m_controlVolumes;
 
-    if(index > -1)
+    if(m_times.size())
     {
-      double dtu = m_times[index]->modifiedJulianDay();
+      int index = findDateTimeIndex(dateTime);
 
-      if(dtu == dateTime)
+      if(index > -1)
       {
-        for(size_t i = 0; i < m_geometries.size() ; i++)
+        double dtu = m_times[index]->modifiedJulianDay();
+
+        if(dtu == dateTime)
         {
-          HCGeometry* geometry = m_geometries[i].data();
-          set<Edge*> & edges = m_edges[geometry];
-
-          double value = (*this)(index ,i);
-
-          for(Edge *edge : edges)
+          for(size_t i = 0; i < m_geometries.size() ; i++)
           {
-            HCPolygon *tri = edge->leftInternal();
-            TriCV *cv = controlVolumes[tri->index()];
-            int faceIndex = edge->marker();
+            HCGeometry* geometry = m_geometries[i].data();
+            set<Edge*> & edges = m_edges[geometry];
 
-            double depth = value - cv->ecz[faceIndex] ;
-            depth = max(0.0, depth);
+            double value = (*this)(index ,i);
 
-            VarBC &edgeDepth = cv->faceDepths[faceIndex];
-            edgeDepth.value = depth;
-            edgeDepth.associatedValue = max(value , cv->snz[0]);
-
-            FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
-
-            faceVel.vel->v[0] = 0.0;
-            faceVel.vel->v[1] = 0.0;
-            faceVel.value = 0.0;
-            faceVel.associatedValue = 0.0;
-
-//            cv->calculateWSEGradient();
-
-            if(depth > 1e-2)
+            for(Edge *edge : edges)
             {
-              double r_eta = cv->r_eta[faceIndex];
-              double factor = edgeDepth.value * r_eta;
+              HCPolygon *tri = edge->leftInternal();
+              TriCV *cv = controlVolumes[tri->index()];
+              int faceIndex = edge->marker();
 
-              faceVel.value = 0;
+              double depth = value - cv->ecz[faceIndex] ;
+              depth = max(0.0, depth);
 
-              switch (m_inletOutletType)
+              VarBC &edgeDepth = cv->faceDepths[faceIndex];
+              edgeDepth.value = depth;
+              edgeDepth.associatedValue = max(value , cv->snz[0]);
+
+              FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
+
+              faceVel.vel->v[0] = 0.0;
+              faceVel.vel->v[1] = 0.0;
+              faceVel.value = 0.0;
+              faceVel.associatedValue = 0.0;
+
+              //            cv->calculateWSEGradient();
+
+              if(depth > 1e-2)
               {
-                case Outlet:
-                  {
-                    std::tuple<double,double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,faceIndex);
+                double r_eta = cv->r_eta[faceIndex];
+                double factor = edgeDepth.value * r_eta;
 
-                    faceVel.value = max(std::get<2>(fv),0.0);
-                    faceVel.vel->v[0] = std::get<0>(fv);
-                    faceVel.vel->v[1] = std::get<1>(fv);
-                    faceVel.associatedValue = faceVel.value * factor;
+                faceVel.value = 0;
 
-                    if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                      printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
-                  }
-                  break;
-                case Inlet:
-                  {
-                    std::tuple<double,double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,faceIndex);
+                switch (m_inletOutletType)
+                {
+                  case Outlet:
+                    {
+                      std::tuple<double,double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,faceIndex);
 
-                    faceVel.value = min(std::get<2>(fv),0.0);
-                    faceVel.vel->v[0] = std::get<0>(fv);
-                    faceVel.vel->v[1] = std::get<1>(fv);
-                    faceVel.associatedValue = faceVel.value * factor;
+                      faceVel.value = max(std::get<2>(fv),0.0);
+                      faceVel.vel->v[0] = std::get<0>(fv);
+                      faceVel.vel->v[1] = std::get<1>(fv);
+                      faceVel.associatedValue = faceVel.value * factor;
 
-                    if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                      printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
-                  }
-                  break;
-                case OutletInlet:
-                  {
-                    std::tuple<double,double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,faceIndex);
+                      if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+                        printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
+                    }
+                    break;
+                  case Inlet:
+                    {
+                      std::tuple<double,double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,faceIndex);
 
-                    faceVel.value = std::get<2>(fv);
-                    faceVel.vel->v[0] = std::get<0>(fv);
-                    faceVel.vel->v[1] = std::get<1>(fv);
-                    faceVel.associatedValue = faceVel.value * factor;
+                      faceVel.value = min(std::get<2>(fv),0.0);
+                      faceVel.vel->v[0] = std::get<0>(fv);
+                      faceVel.vel->v[1] = std::get<1>(fv);
+                      faceVel.associatedValue = faceVel.value * factor;
 
-                    if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                      printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
-                  }
-                  break;
-                case None:
-                  {
-                    faceVel.vel->v[0] = 0.0;
-                    faceVel.vel->v[1] = 0.0;
-                    faceVel.value = 0.0;
-                    faceVel.associatedValue = 0.0;
-                  }
-                  break;
+                      if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+                        printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
+                    }
+                    break;
+                  case OutletInlet:
+                    {
+                      std::tuple<double,double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,faceIndex);
+
+                      faceVel.value = std::get<2>(fv);
+                      faceVel.vel->v[0] = std::get<0>(fv);
+                      faceVel.vel->v[1] = std::get<1>(fv);
+                      faceVel.associatedValue = faceVel.value * factor;
+
+                      if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+                        printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
+                    }
+                    break;
+                  case None:
+                    {
+                      faceVel.vel->v[0] = 0.0;
+                      faceVel.vel->v[1] = 0.0;
+                      faceVel.value = 0.0;
+                      faceVel.associatedValue = 0.0;
+                    }
+                    break;
+                }
               }
             }
           }
         }
-      }
-      else if(index - 1 > -1)
-      {
-        double dtl = m_times[index - 1]->modifiedJulianDay();
-        double factor  = (dateTime - dtl) / (dtu - dtl);
-
-        for(size_t i = 0; i < m_geometries.size() ; i++)
+        else if(index - 1 > -1)
         {
-          HCGeometry *geometry = m_geometries[i].data();
-          set<Edge*> & edges = m_edges[geometry];
+          double dtl = m_times[index - 1]->modifiedJulianDay();
+          double factor  = (dateTime - dtl) / (dtu - dtl);
 
-          double valueu = (*this)(index,i);
-          double valuel = (*this)(index - 1,i);
-
-          double value = valuel + factor * (valueu - valuel);
-
-          for(Edge *edge : edges)
+          for(size_t i = 0; i < m_geometries.size() ; i++)
           {
-            HCPolygon *tri = edge->leftInternal();
-            TriCV *cv = controlVolumes[tri->index()];
-            int faceIndex = edge->marker();
+            HCGeometry *geometry = m_geometries[i].data();
+            set<Edge*> & edges = m_edges[geometry];
 
-            double depth = value - cv->ecz[faceIndex] ;
-            depth = max(0.0, depth);
+            double valueu = (*this)(index,i);
+            double valuel = (*this)(index - 1,i);
 
-            VarBC &edgeDepth = cv->faceDepths[faceIndex];
-            edgeDepth.value = depth;
-            edgeDepth.associatedValue = max(value , cv->snz[0]);
+            double value = valuel + factor * (valueu - valuel);
 
-//            cv->calculateWSEGradient();
-
-            double factor = edgeDepth.value * cv->r_eta[faceIndex];
-
-            FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
-            faceVel.vel->v[0] = 0.0;
-            faceVel.vel->v[1] = 0.0;
-            faceVel.value = 0.0;
-            faceVel.associatedValue = 0.0;
-
-
-            if(edgeDepth.value > 1e-2)
+            for(Edge *edge : edges)
             {
-              switch (m_inletOutletType)
+              HCPolygon *tri = edge->leftInternal();
+              TriCV *cv = controlVolumes[tri->index()];
+              int faceIndex = edge->marker();
+
+              double depth = value - cv->ecz[faceIndex] ;
+              depth = max(0.0, depth);
+
+              VarBC &edgeDepth = cv->faceDepths[faceIndex];
+              edgeDepth.value = depth;
+              edgeDepth.associatedValue = max(value , cv->snz[0]);
+
+              //            cv->calculateWSEGradient();
+
+              double factor = edgeDepth.value * cv->r_eta[faceIndex];
+
+              FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
+              faceVel.vel->v[0] = 0.0;
+              faceVel.vel->v[1] = 0.0;
+              faceVel.value = 0.0;
+              faceVel.associatedValue = 0.0;
+
+
+              if(edgeDepth.value > 1e-2)
               {
-                case Outlet:
-                  {
-                    std::tuple<double,double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,faceIndex);
+                switch (m_inletOutletType)
+                {
+                  case Outlet:
+                    {
+                      std::tuple<double,double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,faceIndex);
 
-                    faceVel.value = max(std::get<2>(fv),0.0);
-                    faceVel.vel->v[0] = std::get<0>(fv);
-                    faceVel.vel->v[1] = std::get<1>(fv);
-                    faceVel.associatedValue = faceVel.value * factor;
+                      faceVel.value = max(std::get<2>(fv),0.0);
+                      faceVel.vel->v[0] = std::get<0>(fv);
+                      faceVel.vel->v[1] = std::get<1>(fv);
+                      faceVel.associatedValue = faceVel.value * factor;
 
-                    if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                      printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
-                  }
-                  break;
-                case Inlet:
-                  {
-                    std::tuple<double,double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,faceIndex);
+                      if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+                        printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
+                    }
+                    break;
+                  case Inlet:
+                    {
+                      std::tuple<double,double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,faceIndex);
 
-                    faceVel.value = min(std::get<2>(fv),0.0);
-                    faceVel.vel->v[0] = std::get<0>(fv);
-                    faceVel.vel->v[1] = std::get<1>(fv);
-                    faceVel.associatedValue = faceVel.value * factor;
+                      faceVel.value = min(std::get<2>(fv),0.0);
+                      faceVel.vel->v[0] = std::get<0>(fv);
+                      faceVel.vel->v[1] = std::get<1>(fv);
+                      faceVel.associatedValue = faceVel.value * factor;
 
-                    if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                      printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
-                  }
-                  break;
-                case OutletInlet:
-                  {
-                    std::tuple<double,double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,faceIndex);
+                      if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+                        printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
+                    }
+                    break;
+                  case OutletInlet:
+                    {
+                      std::tuple<double,double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,faceIndex);
 
-                    faceVel.value = std::get<2>(fv);
-                    faceVel.vel->v[0] = std::get<0>(fv);
-                    faceVel.vel->v[1] = std::get<1>(fv);
-                    faceVel.associatedValue = faceVel.value * factor;
+                      faceVel.value = std::get<2>(fv);
+                      faceVel.vel->v[0] = std::get<0>(fv);
+                      faceVel.vel->v[1] = std::get<1>(fv);
+                      faceVel.associatedValue = faceVel.value * factor;
 
-                    if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                      printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
-                  }
-                  break;
-                case None:
-                  {
-                    faceVel.vel->v[0] = 0.0;
-                    faceVel.vel->v[1] = 0.0;
-                    faceVel.value = 0.0;
-                    faceVel.associatedValue = 0.0;
-                  }
-                  break;
+                      if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+                        printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceVel.vel->v[0], faceVel.vel->v[1], edgeDepth.value);
+                    }
+                    break;
+                  case None:
+                    {
+                      faceVel.vel->v[0] = 0.0;
+                      faceVel.vel->v[1] = 0.0;
+                      faceVel.value = 0.0;
+                      faceVel.associatedValue = 0.0;
+                    }
+                    break;
+                }
               }
             }
           }
         }
+
+        applied = true;
+
       }
-
-      applied = true;
-
     }
-  }
-  else
-  {
-    for(size_t i = 0; i < m_geometries.size() ; i++)
+    else
     {
-      HCGeometry *geometry = m_geometries[i].data();
-      set<Edge*> & edges = m_edges[geometry];
-
-      for(Edge *edge : edges)
+      for(size_t i = 0; i < m_geometries.size() ; i++)
       {
-        HCPolygon *tri = edge->leftInternal();
-        TriCV *cv = controlVolumes[tri->index()];
-        int faceIndex = edge->marker();
+        HCGeometry *geometry = m_geometries[i].data();
+        set<Edge*> & edges = m_edges[geometry];
 
-        FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
-        faceVel.value = 0.0;
+        for(Edge *edge : edges)
+        {
+          HCPolygon *tri = edge->leftInternal();
+          TriCV *cv = controlVolumes[tri->index()];
+          int faceIndex = edge->marker();
+
+          FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
+          faceVel.value = 0.0;
+        }
       }
     }
   }

@@ -10,8 +10,8 @@ QT       -= gui
 DEFINES += FVHMCOMPONENT_LIBRARY
 DEFINES += UTAH_CHPC
 DEFINES += USE_OPENMP
-#DEFINES += USE_HYPRE_OPENMP
 DEFINES += USE_MPI
+#DEFINES += USE_HYPRE_OPENMP
 #DEFINES += USE_SUITESPARSE
 
 CONFIG += c++11
@@ -231,7 +231,38 @@ CONFIG(debug, debug|release) {
 
 CONFIG(release, debug|release) {
 
-    DESTDIR = lib
+     contains(DEFINES,FVHMCOMPONENT_LIBRARY){
+         #MacOS
+         macx{
+             DESTDIR = lib/macx
+         }
+
+         #Linux
+         linux{
+             DESTDIR = lib/linux
+         }
+
+         #Windows
+         win32{
+             DESTDIR = lib/win32
+         }
+     } else {
+         #MacOS
+         macx{
+             DESTDIR = bin/macx
+         }
+
+         #Linux
+         linux{
+             DESTDIR = bin/linux
+         }
+
+         #Windows
+         win32{
+             DESTDIR = bin/win32
+         }
+     }
+
     RELEASE_EXTRAS = ./build/release
     OBJECTS_DIR = $$RELEASE_EXTRAS/.obj
     MOC_DIR = $$RELEASE_EXTRAS/.moc
@@ -239,11 +270,15 @@ CONFIG(release, debug|release) {
     UI_DIR = $$RELEASE_EXTRAS/.ui
 
    macx{
-    LIBS += -L./../HydroCoupleSDK/lib -lHydroCoupleSDK
+    LIBS += -L./../HydroCoupleSDK/lib/macx -lHydroCoupleSDK
    }
 
    linux{
-    LIBS += -L./../HydroCoupleSDK/lib -lHydroCoupleSDK
+    LIBS += -L./../HydroCoupleSDK/lib/linux -lHydroCoupleSDK
+   }
+
+   win32{
+    LIBS += -L./../HydroCoupleSDK/lib/win32 -lHydroCoupleSDK1
    }
 
    message("Release mode...")

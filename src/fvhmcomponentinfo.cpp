@@ -2,10 +2,11 @@
 #include "fvhmcomponentinfo.h"
 #include "fvhmcomponent.h"
 #include "spatial/geometryfactory.h"
+#include "temporal/temporalinterpolationfactory.h"
 #include <QUuid>
 
 FVHMComponentInfo::FVHMComponentInfo(QObject *parent)
-   :ModelComponentInfo(parent)
+   : AbstractModelComponentInfo(parent)
 {
    GeometryFactory::registerGDAL();
    setId("FVHMComponent 1.0.0");
@@ -18,6 +19,7 @@ FVHMComponentInfo::FVHMComponentInfo(QObject *parent)
    setUrl("www.hydrocouple.org");
    setEmail("caleb.buahin@aggiemail.usu.edu");
    setVersion("1.0.0.0 ");
+   createAdaptedOutputFactories();
 }
 
 FVHMComponentInfo::~FVHMComponentInfo()
@@ -35,3 +37,8 @@ HydroCouple::IModelComponent* FVHMComponentInfo::createComponentInstance()
   return nullptr;
 }
 
+void FVHMComponentInfo::createAdaptedOutputFactories()
+{
+  TemporalInterpolationFactory* tempInterpFactory = new TemporalInterpolationFactory("TimeInterpolationFactory",this);
+  addAdaptedOutputFactory(tempInterpFactory);
+}

@@ -56,60 +56,63 @@ void CriticalDepthOutflowBC::prepare()
 
 void CriticalDepthOutflowBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
 {
-  const std::vector<TriCV*>& controlVolumes = m_modelComponent->controlVolumes();
-
-  for(int i = 0; i < m_geometries.length() ; i++)
+  if(m_geometries.size() && m_edges.size())
   {
-    HCGeometry* geometry = m_geometries[i].data();
-    set<Edge*> & edges = m_edges[geometry];
+    const std::vector<TriCV*>& controlVolumes = m_modelComponent->controlVolumes();
 
-    //double slopeValue = (*this)[i];
-
-    for(Edge *edge : edges)
+    for(int i = 0; i < m_geometries.length() ; i++)
     {
-      HCPolygon *tri = edge->leftInternal();
-      TriCV *cv = controlVolumes[tri->index()];
-      int face = edge->marker();
+      HCGeometry* geometry = m_geometries[i].data();
+      set<Edge*> & edges = m_edges[geometry];
 
-      std::tuple<double, double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,face);
+      //double slopeValue = (*this)[i];
 
-      VarBC &faceDepth = cv->faceDepths[face];
-      FaceNormVelBC &faceVel = cv->faceNormalVels[face];
-
-      double outflowVel = std::max(0.0, std::get<2>(fv));
-      double depth = outflowVel * outflowVel / m_modelComponent->g;
-
-      if(outflowVel > 0 && depth > 1e-3 && depth  < 1e4)
+      for(Edge *edge : edges)
       {
-        cv->hasEdgeDepthBC = true;
-        faceDepth.isBC = true;
-        faceDepth.associatedValue = cv->ecz[face] + depth;
-        faceDepth.value = depth;
+        HCPolygon *tri = edge->leftInternal();
+        TriCV *cv = controlVolumes[tri->index()];
+        int face = edge->marker();
 
-        faceVel.value = std::get<2>(fv);
-        faceVel.vel->v[0] = std::get<0>(fv);
-        faceVel.vel->v[1] = std::get<1>(fv);
-        faceVel.associatedValue = faceVel.value * depth * cv->r_eta[face];
+        std::tuple<double, double, double> fv = FVHMComponent::calculateZeroGradientFaceVelocity(cv,face);
 
-        if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+        VarBC &faceDepth = cv->faceDepths[face];
+        FaceNormVelBC &faceVel = cv->faceNormalVels[face];
+
+        double outflowVel = std::max(0.0, std::get<2>(fv));
+        double depth = outflowVel * outflowVel / m_modelComponent->g;
+
+        if(outflowVel > 0 && depth > 1e-3 && depth  < 1e4)
         {
-          printf("FVHM QOut: %f, VOut: %f, EdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceDepth.value);
+          cv->hasEdgeDepthBC = true;
+          faceDepth.isBC = true;
+          faceDepth.associatedValue = cv->ecz[face] + depth;
+          faceDepth.value = depth;
+
+          faceVel.value = std::get<2>(fv);
+          faceVel.vel->v[0] = std::get<0>(fv);
+          faceVel.vel->v[1] = std::get<1>(fv);
+          faceVel.associatedValue = faceVel.value * depth * cv->r_eta[face];
+
+          if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+          {
+            printf("FVHM QOut: %f, VOut: %f, EdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceDepth.value);
+          }
         }
-      }
-      else
-      {
-        cv->hasEdgeDepthBC = false;
-        faceDepth.isBC = false;
-        cv->calculateWSEGradient();
-
-        faceVel.vel->v[0] = 0.0;
-        faceVel.vel->v[1] = 0.0;
-        faceVel.value = 0.0;
-        faceVel.associatedValue = 0.0;
-
-        if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+        else
         {
-          printf("FVHM QOut: %f, VOut: %f, EdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceDepth.value);
+          cv->hasEdgeDepthBC = false;
+          faceDepth.isBC = false;
+          cv->calculateWSEGradient();
+
+          faceVel.vel->v[0] = 0.0;
+          faceVel.vel->v[1] = 0.0;
+          faceVel.value = 0.0;
+          faceVel.associatedValue = 0.0;
+
+          if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+          {
+            printf("FVHM QOut: %f, VOut: %f, EdgeDepth: %f\n",faceVel.associatedValue,faceVel.value,faceDepth.value);
+          }
         }
       }
     }

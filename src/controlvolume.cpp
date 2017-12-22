@@ -27,6 +27,8 @@ TriCV::TriCV(HCTriangle *cell, FVHMComponent *modelComponent)
 
   int numNodes = numEdges + 1;
 
+  minNodeDepth = 0.0;
+
   numNodeTriangles = new int[numEdges];
   nodeTriangleIndexes = new int*[numEdges];
   nodeTriangleDistances = new double*[numEdges];
@@ -73,7 +75,7 @@ TriCV::TriCV(HCTriangle *cell, FVHMComponent *modelComponent)
   r_xi = new Vect[numEdges];
   r_xi_l = new double[numEdges]();
   r_xi_dot_e_n = new double[numEdges]();
-  friction = new double[numEdges]();
+  friction = new double[2]();
 
   wallShearFriction = new double*[2];
   velCoeffs = new double*[2];
@@ -91,8 +93,8 @@ TriCV::TriCV(HCTriangle *cell, FVHMComponent *modelComponent)
   faceDepths = new VarBC[numEdges];
 
   grad_z = new VectBC();
-  grad_h = new VectBC();
-  //  grad_zcorr = new VectBC();
+  grad_h = new Vect();
+  grad_zcorr = new Vect();
 
   grad_vel = new VectBC[2];
   faceNormalVels = new FaceNormVelBC[numEdges];
@@ -192,10 +194,8 @@ TriCV::TriCV(HCTriangle *cell, FVHMComponent *modelComponent)
     orderedNTrisIndexes[i] = -1;
   }
 
-  prevZ->value = cz;
-  z->value =  cz;
-  prevH->value = modelComponent->m_viscousSubLayerDepth;
-  h->value = modelComponent->m_viscousSubLayerDepth;
+  z->value = prevZ->value = snz[0];
+  h->value = prevH->value = modelComponent->m_viscousSubLayerDepth;
 
   calculateInitialWSEGradient();
 }
@@ -222,13 +222,16 @@ TriCV::~TriCV()
 
   delete[] nodeTriangleIndexes;
   delete[] nodeTriangleDistances;
-  //  delete[] nodeTriangleDistancesV;
   delete[] vertices;
 
   delete z;
   delete grad_z;
+
+  if(grad_z_init)
+    delete grad_z_init;
+
   delete grad_h;
-  //  delete grad_zcorr;
+  delete grad_zcorr;
   delete prevZ;
 
   delete h;
@@ -346,7 +349,6 @@ void TriCV::calculateAdjacentCellParams()
       numNodeTriangles[i] = indexes.size();
       nodeTriangleIndexes[i] = new int[indexes.size()];
       nodeTriangleDistances[i] = new double[indexes.size()];
-      //      nodeTriangleDistancesV[i] = new Vect[indexes.size()];
 
       totalnTris += indexes.size();
 
@@ -354,7 +356,6 @@ void TriCV::calculateAdjacentCellParams()
       {
         nodeTriangleIndexes[i][d] = indexes[d];
         nodeTriangleDistances[i][d] = distances[d];
-        //        nodeTriangleDistancesV[i][d] = distances[d];
       }
     }
 
@@ -564,11 +565,11 @@ void TriCV::setVFRDepth(double depth, bool prev)
     }
     else if(wse > zz1 && wse <= zz2)
     {
-      prevZ->value = zz1 + cbrt(3.0 * depth * (zz2 - zz1) * (zz3 - zz1))/* + modelComponent->m_viscousSubLayerDepth*/;
+      prevZ->value = zz1 + cbrt(3.0 * depth * (zz2 - zz1) * (zz3 - zz1)) +  modelComponent->m_viscousSubLayerDepth ;
     }
     else
     {
-      prevZ->value = zz1 + cbrt(3.0 * depth * (zz2 - zz1) * (zz3 - zz1)) + modelComponent->m_viscousSubLayerDepth;
+      prevZ->value = zz1 + cbrt(3.0 * depth * (zz2 - zz1) * (zz3 - zz1)) +  modelComponent->m_viscousSubLayerDepth  ;
     }
   }
   else
@@ -588,7 +589,7 @@ void TriCV::setVFRDepth(double depth, bool prev)
     }
     else if(wse > zz1 && wse <= zz2)
     {
-      z->value = zz1 + cbrt(3.0 * depth * (zz2 - zz1) * (zz3 - zz1))/* + modelComponent->m_viscousSubLayerDepth*/;
+      z->value = zz1 + cbrt(3.0 * depth * (zz2 - zz1) * (zz3 - zz1)) + modelComponent->m_viscousSubLayerDepth;
     }
     else
     {
@@ -623,48 +624,53 @@ void TriCV::calculateEdgeDepths()
     if(!faceDepth.isBC)
     {
       int cvnIndex = nTris[i];
-      double elev = 0;
+      double edgeDepth = 0.0;
+      double edgeZ = 0.0;
+
 
       if(cvnIndex > -1)
       {
         TriCV *cvn = modelComponent->m_controlVolumes[cvnIndex];
-
         double wl_n = w_l[i];
         double wl_p = 1.0 - wl_n;
 
-        double gradh_x = wl_p * grad_h->v[0] + wl_n * cvn->grad_h->v[0];
-        double gradh_y = wl_p * grad_h->v[1] + wl_n * cvn->grad_h->v[1];
+        //        double gradh_x = wl_p * grad_h->v[0] + wl_n * cvn->grad_h->v[0];
+        //        double gradh_y = wl_p * grad_h->v[1] + wl_n * cvn->grad_h->v[1];
+        //        edgeDepth = wl_p * h->value + wl_n * cvn->h->value + Vect::dotProduct(gradh_x, gradh_y, 0.0, df[i]);
 
-        elev = max(modelComponent->m_viscousSubLayerDepth,
-                   wl_p * h->value + wl_n * cvn->h->value + Vect::dotProduct(gradh_x, gradh_y, 0.0, df[i]));
+        double gradz_x = wl_p * grad_z->v[0] + wl_n * cvn->grad_z->v[0];
+        double gradz_y = wl_p * grad_z->v[1] + wl_n * cvn->grad_z->v[1];
+        edgeZ = wl_p * z->value + wl_n * cvn->z->value + Vect::dotProduct(gradz_x, gradz_y, 0.0, df[i]);
       }
       else
       {
-        elev = max(modelComponent->m_viscousSubLayerDepth,
-                   h->value + Vect::dotProduct(*grad_h, r_e[i]));
+//        edgeDepth =  h->value + Vect::dotProduct(*grad_h, r_e[i]);
+        edgeZ =  h->value + Vect::dotProduct(*grad_h, r_e[i]);
       }
 
+      //      edgeDepth = max(0.0, edgeDepth);
+      //      faceDepth.value = edgeDepth;
+      //      faceDepth.associatedValue = edgeDepth + ecz[i];
 
-      faceDepth.value = elev;
-      faceDepth.associatedValue = elev + ecz[i];
+      double sn1 = snzMinEdge[i];
+      double sn2 = snzMaxEdge[i];
 
-      //      double sn1 = snzMinEdge[i];
-      //      double sn2 = snzMaxEdge[i];
-
-      //      if(elev > sn2)
-      //      {
-      //        faceDepth.value = elev - ecz[i];
-      //      }
-      //      else if(elev > sn1 && elev <= sn2)
-      //      {
-      //        double num = elev - sn1;
-      //        faceDepth.value = (num * num) / (2.0 * (sn2 - sn1));
-      //      }
-      //      else if(elev <= sn1)
-      //      {
-      //        faceDepth.associatedValue = sn1;
-      //        faceDepth.value = 0.0;
-      //      }
+      if(edgeZ <= sn1)
+      {
+        faceDepth.value = modelComponent->m_viscousSubLayerDepth;
+        faceDepth.associatedValue = sn1 + modelComponent->m_viscousSubLayerDepth;
+      }
+      else if(edgeZ > sn1 && edgeZ <= sn2)
+      {
+        double num = edgeZ - sn1;
+        faceDepth.value = (num * num) / (2.0 *(sn2 - sn1));
+        faceDepth.associatedValue = edgeZ;
+      }
+      else
+      {
+        faceDepth.value = edgeZ - ecz[i];
+        faceDepth.associatedValue = edgeZ;
+      }
     }
   }
 }
@@ -730,113 +736,120 @@ void TriCV::calculateWSEGradient()
 
         dz_dx += z_e * r_eta[i] * e_n[i].v[0];
         dz_dy += z_e * r_eta[i] * e_n[i].v[1];
+
       }
       else
       {
         double z_e =  z->value + Vect::dotProduct(*grad_z, r_e[i]);
-
         dz_dx += z_e * r_eta[i] * e_n[i].v[0];
         dz_dy += z_e * r_eta[i] * e_n[i].v[1];
       }
     }
 
     dz_dx /= area;
-    grad_z->v[0] = dz_dx;
-
     dz_dy /= area;
+
+    grad_z->v[0] = dz_dx;
     grad_z->v[1] = dz_dy;
   }
 }
 
 void TriCV::calculateDepthGradient()
 {
-  //  if(grad_z->isBC == false)
+
+  double dh_dx = 0.0;
+  double dh_dy = 0.0;
+
+  for(int i = 0 ; i < numEdges; i++)
   {
+    int cvnIndex = nTris[i];
 
-    double dh_dx = 0.0;
-    double dh_dy = 0.0;
-
-    for(int i = 0 ; i < numEdges; i++)
+    if(faceDepths[i].isBC)
     {
-      int cvnIndex = nTris[i];
+      double h_e = max(0.0, faceDepths[i].value);
 
-      if(faceDepths[i].isBC)
-      {
-        double h_e = max(modelComponent->m_viscousSubLayerDepth, faceDepths[i].value);
-
-        dh_dx += h_e * r_eta[i] * e_n[i].v[0];
-        dh_dy += h_e * r_eta[i] * e_n[i].v[1];
-      }
-      else if(cvnIndex  > -1)
-      {
-        TriCV *cvn = modelComponent->m_controlVolumes[cvnIndex];
-
-        double wl_n = w_l[i];
-        double wl_p = 1.0 - wl_n;
-
-        double gradh_x = wl_p * grad_h->v[0] + wl_n * cvn->grad_h->v[0];
-        double gradh_y = wl_p * grad_h->v[1] + wl_n * cvn->grad_h->v[1];
-
-        double h_e = max(modelComponent->m_viscousSubLayerDepth,
-                         wl_p * h->value + wl_n * cvn->h->value + Vect::dotProduct(gradh_x, gradh_y, 0, df[i]));
-
-        dh_dx += h_e * r_eta[i] * e_n[i].v[0];
-        dh_dy += h_e * r_eta[i] * e_n[i].v[1];
-      }
-      else
-      {
-        double h_e = max(modelComponent->m_viscousSubLayerDepth, h->value + Vect::dotProduct(*grad_h, r_e[i]));
-
-        dh_dx += h_e * r_eta[i] * e_n[i].v[0];
-        dh_dy += h_e * r_eta[i] * e_n[i].v[1];
-      }
+      dh_dx += h_e * r_eta[i] * e_n[i].v[0];
+      dh_dy += h_e * r_eta[i] * e_n[i].v[1];
     }
+    else if(cvnIndex  > -1)
+    {
+      TriCV *cvn = modelComponent->m_controlVolumes[cvnIndex];
 
-    grad_h->v[0] = dh_dx / area;
-    grad_h->v[1] = dh_dy / area;
+      double wl_n = w_l[i];
+      double wl_p = 1.0 - wl_n;
+
+      double gradh_x = wl_p * grad_h->v[0] + wl_n * cvn->grad_h->v[0];
+      double gradh_y = wl_p * grad_h->v[1] + wl_n * cvn->grad_h->v[1];
+
+      double h_e = max(0.0, wl_p * h->value + wl_n * cvn->h->value + Vect::dotProduct(gradh_x, gradh_y, 0, df[i]));
+
+      dh_dx += h_e * r_eta[i] * e_n[i].v[0];
+      dh_dy += h_e * r_eta[i] * e_n[i].v[1];
+
+    }
+    else
+    {
+      double h_e = max(0.0, h->value + Vect::dotProduct(*grad_h, r_e[i]));
+      dh_dx += h_e * r_eta[i] * e_n[i].v[0];
+      dh_dy += h_e * r_eta[i] * e_n[i].v[1];
+    }
   }
+
+  dh_dx /= area;
+  dh_dy /= area;
+
+  grad_h->v[0] = dh_dx;
+  grad_h->v[1] = dh_dy;
 }
 
 void TriCV::calculateZCorrGradient()
 {
-  //  double dz_dx = 0.0;
-  //  double dz_dy = 0.0;
 
-  //  for(int i = 0 ; i < numEdges; i++)
-  //  {
-  //    int cvnIndex = nTris[i];
+  double dz_dx = 0.0;
+  double dz_dy = 0.0;
 
-  //    if(cvnIndex  > -1)
-  //    {
-  //      TriCV *cvn = modelComponent->m_controlVolumes[cvnIndex];
+  for(int i = 0 ; i < numEdges; i++)
+  {
+    int cvnIndex = nTris[i];
 
-  //      double wl_n = w_l[i];
-  //      double wl_p = 1.0 - wl_n;
+    if(cvnIndex  > -1)
+    {
+      TriCV *cvn = modelComponent->m_controlVolumes[cvnIndex];
 
-  //      double gradz_x = wl_p * grad_zcorr->v[0] + wl_n * cvn->grad_zcorr->v[0];
-  //      double gradz_y = wl_p * grad_zcorr->v[1] + wl_n * cvn->grad_zcorr->v[1];
+      double wl_n = w_l[i];
+      double wl_p = 1.0 - wl_n;
 
-  //      double z_e = wl_p * zCorrection + wl_n * cvn->zCorrection + Vect::dotProduct(gradz_x, gradz_y, 0, df[i]);
+      double z_e = wl_p * zCorrection + wl_n * cvn->zCorrection;
 
-  //      dz_dx += z_e * r_eta[i] * e_n[i].v[0];
-  //      dz_dy += z_e * r_eta[i] * e_n[i].v[1];
-  //    }
-  //    else
-  //    {
-  //      double z_e =  z->value + Vect::dotProduct(*grad_z, r_e[i]);
+      double gradz_x = wl_p * grad_zcorr->v[0] + wl_n * cvn->grad_zcorr->v[0];
+      double gradz_y = wl_p * grad_zcorr->v[1] + wl_n * cvn->grad_zcorr->v[1];
 
-  //      dz_dx += z_e * r_eta[i] * e_n[i].v[0];
-  //      dz_dy += z_e * r_eta[i] * e_n[i].v[1];
-  //    }
-  //  }
+      z_e += Vect::dotProduct(gradz_x, gradz_y, 0, df[i]);
 
-  //  grad_zcorr->v[0] = dz_dx / area;
-  //  grad_zcorr->v[1] = dz_dy / area;
+      dz_dx += z_e * r_eta[i] * e_n[i].v[0];
+      dz_dy += z_e * r_eta[i] * e_n[i].v[1];
+
+    }
+    else
+    {
+      double z_e =  zCorrection + Vect::dotProduct(*grad_zcorr, r_e[i]);
+      dz_dx += z_e * r_eta[i] * e_n[i].v[0];
+      dz_dy += z_e * r_eta[i] * e_n[i].v[1];
+    }
+  }
+
+  dz_dx /= area;
+  dz_dy /= area;
+
+  grad_zcorr->v[0] = dz_dx;
+  grad_zcorr->v[1] = dz_dy;
 
 }
 
 void TriCV::calculateNodeElevations()
 {
+
+  minNodeDepth = 0.0;
 
   for(int i = 0; i < numEdges ; i++)
   {
@@ -849,7 +862,7 @@ void TriCV::calculateNodeElevations()
     {
       TriCV *cvn = modelComponent->m_controlVolumes[nodeTriangleIndexes[i][j]];
       double dist = nodeTriangleDistances[i][j];
-      totalValue += cvn->z->value / (dist * dist );
+      totalValue += cvn->z->value / (dist * dist);
       totalDistance += 1.0 / (dist * dist);
     }
 
@@ -859,8 +872,15 @@ void TriCV::calculateNodeElevations()
     }
     else
     {
-      nWSE[i] = max(snz[0], z->value + Vect::dotProduct(*grad_z, r_n[i]));
+      nWSE[i] =  max(snz[0], z->value + Vect::dotProduct(*grad_z, r_n[i]));
     }
+  }
+
+  minNodeDepth = nWSE[0]- nz[0];
+
+  for(int i = 1; i < numEdges; i++)
+  {
+    minNodeDepth = min(minNodeDepth, nWSE[i] - nz[i]);
   }
 
   nWSE[numEdges] = nWSE[0];
@@ -890,19 +910,19 @@ void TriCV::calculateVelocityGradient()
         }
         else if(cvnIndex > -1)
         {
-
           TriCV *cvn = modelComponent->m_controlVolumes[cvnIndex];
+          double u_e = 0;
+
           double wl_n = w_l[i];
           double wl_p = 1.0 - wl_n;
 
           double gradVX = wl_p * gradVel.v[0] + wl_n * cvn->grad_vel[f].v[0];
           double gradVY = wl_p * gradVel.v[1] + wl_n * cvn->grad_vel[f].v[1];
 
-          double u_e = wl_p * (vel[f].value) + wl_n * (cvn->vel[f].value) + Vect::dotProduct(gradVX, gradVY, 0.0, this->df[i]);
+          u_e = wl_p * vel[f].value + wl_n * cvn->vel[f].value + Vect::dotProduct(gradVX, gradVY, 0.0, this->df[i]);
 
           du_dx += u_e * r_eta[i] * e_n[i].v[0];
           du_dy += u_e * r_eta[i] * e_n[i].v[1];
-
         }
         else
         {
@@ -912,12 +932,14 @@ void TriCV::calculateVelocityGradient()
         }
       }
 
-      gradVel.v[0] = du_dx / area;
-      gradVel.v[1] = du_dy / area;
+      du_dx /= area;
+      du_dy /= area;
+
+      gradVel.v[0] = du_dx;
+      gradVel.v[1] = du_dy;
     }
   }
 }
-
 
 void TriCV::calculateNodeVelocities()
 {
@@ -982,21 +1004,22 @@ void TriCV::calculateFaceVelocities()
 
       if(cvnIndex > -1)
       {
-        double v1 = 0.0, v2 = 0.0, v3 = 0.0,
-            evel = 0.0 , A_e_cv = 0.0, A_e_cvn =0.0;
+        double v1 = 0.0, v2 = 0.0, v3 = 0.0, evel = 0.0 ,
+            A_e_cv = 0.0, A_e_cvn = 0.0,
+            A_e_cvy = 0.0, A_e_cvny = 0.0;
 
         TriCV* cvn = modelComponent->m_controlVolumes[cvnIndex];
-
-        double wl_n = 0.0;
-        double wl_p = 0.0;
 
         if(wetIndex && cvn->wetIndex)
         {
 
-          wl_n = w_l[i];
-          wl_p = 1.0 - wl_n;
+          double wl_n = w_l[i];
+          double wl_p = 1.0 - wl_n;
           A_e_cv  = wl_p * area / velCoeffs[0][0];
-          A_e_cvn = wl_n * cvn->area / cvn->velCoeffs[0][0];
+          A_e_cvn  = wl_n * cvn->area / cvn->velCoeffs[0][0];
+
+          A_e_cvy  = wl_p * area / velCoeffs[1][0];
+          A_e_cvny  = wl_n * cvn->area / cvn->velCoeffs[1][0];
 
 
           //v1
@@ -1020,32 +1043,46 @@ void TriCV::calculateFaceVelocities()
           //v2
           {
             double tv2x = A_e_cv * h->value * grad_z->v[0] + A_e_cvn * cvn->h->value * cvn->grad_z->v[0];
-            double tv2y = A_e_cv * h->value * grad_z->v[1] + A_e_cvn * cvn->h->value * cvn->grad_z->v[1];
-
-            v2 = Vect::dotProduct(-modelComponent->g * tv2x, -modelComponent->g * tv2y, 0, e_xi[i]);
+            double tv2y = A_e_cvy * h->value * grad_z->v[1] + A_e_cvny * cvn->h->value * cvn->grad_z->v[1];
+            v2 =  -modelComponent->g * Vect::dotProduct(tv2x, tv2y, 0, e_xi[i]);
           }
 
           //v3
           {
-            v3  = -modelComponent->g * (A_e_cv + A_e_cvn) * faceDepths[i].value * (cvn->z->value - z->value) / r_xi_l[i];
+            v3  = -modelComponent->g * (A_e_cv + A_e_cvn) * h->value * (cvn->z->value - z->value) / r_xi_l[i];
           }
 
           evel = v1 - v2 + v3;
         }
         else if(cvn->wetIndex)
         {
-          double vv1 = cvn->vel[0].value + Vect::dotProduct(cvn->grad_vel[0], r_e_cvn[i]);
-          double vv2 = cvn->vel[1].value + Vect::dotProduct(cvn->grad_vel[1], r_e_cvn[i]);
 
-          v1 = Vect::dotProduct(vv1, vv2, 0.0, e_n[i]) * modelComponent->m_velocityRelaxFactor;
+          //          double vv1 = vel[0].value + Vect::dotProduct(grad_vel[0], r_e[i]);
+          //          double vv2 = vel[1].value + Vect::dotProduct(grad_vel[1], r_e[i]);
+          //          v1 = Vect::dotProduct(vv1, vv2, 0.0, e_n[i]);
+          //          evel = min(0.0, v1);
+
+          double wl_n = w_l[i];
+          double wl_p = 1.0 - wl_n;
+          double ux = wl_p * vel[0].value + wl_n * cvn->vel[0].value + Vect::dotProduct(grad_vel[0], df[i]);
+          double uy = wl_p * vel[1].value + wl_n * cvn->vel[1].value + Vect::dotProduct(grad_vel[1], df[i]);
+          v1 = Vect::dotProduct(ux,uy,0.0, e_n[i]);
           evel = min(0.0, v1);
         }
         else if(wetIndex)
         {
-          double vv1 = vel[0].value + Vect::dotProduct(grad_vel[0], r_e[i]);
-          double vv2 = vel[1].value + Vect::dotProduct(grad_vel[1], r_e[i]);
 
-          v1 = Vect::dotProduct(vv1, vv2, 0.0, e_n[i]) * modelComponent->m_velocityRelaxFactor;;
+          //          double vv1 = vel[0].value + Vect::dotProduct(grad_vel[0], r_e[i]);
+          //          double vv2 = vel[1].value + Vect::dotProduct(grad_vel[1], r_e[i]);
+          //          v1 = Vect::dotProduct(vv1, vv2, 0.0, e_n[i]);
+          //          evel = max(0.0, v1);
+
+
+          double wl_n = w_l[i];
+          double wl_p = 1.0 - wl_n;
+          double ux = wl_p * vel[0].value + wl_n * cvn->vel[0].value + Vect::dotProduct(grad_vel[0], df[i]);
+          double uy = wl_p * vel[1].value + wl_n * cvn->vel[1].value + Vect::dotProduct(grad_vel[1], df[i]);
+          v1 = Vect::dotProduct(ux,uy,0.0, e_n[i]);
           evel = max(0.0, v1);
         }
 
@@ -1307,26 +1344,35 @@ void TriCV::printDetails()
          index,
          wetIndex, contIndex,
          inflowOutflow, friction[0], friction[1],
-         h->value, grad_h->v[0], grad_h->v[1],
-         z->value, grad_z->v[0], grad_z->v[1],
-         vel[0].value, grad_vel[0].v[0], grad_vel[0].v[1],
-         vel[1].value, grad_vel[1].v[0], grad_vel[1].v[1],
-         faceNormalVels[0].value, faceNormalVels[1].value, faceNormalVels[2].value);
+      h->value, grad_h->v[0], grad_h->v[1],
+      z->value, grad_z->v[0], grad_z->v[1],
+      vel[0].value, grad_vel[0].v[0], grad_vel[0].v[1],
+      vel[1].value, grad_vel[1].v[0], grad_vel[1].v[1],
+      faceNormalVels[0].value, faceNormalVels[1].value, faceNormalVels[2].value);
 }
 
 void TriCV::calculateInitialWSEGradient()
 {
-  double *values = new double[numEdges];
-  Vect  **distances = new Vect*[numEdges];
-
-  for(int i = 0; i < numEdges; i++)
+  if(grad_z_init == nullptr)
   {
-    values[i] = ecz[i];
-    distances[i] = &r_e[i];
+    grad_z_init = new Vect();
+    double *values = new double[numEdges];
+    Vect  **distances = new Vect*[numEdges];
+
+    for(int i = 0; i < numEdges; i++)
+    {
+      values[i] = ecz[i];
+      distances[i] = &r_e[i];
+    }
+
+    lsGradReconstruction(cz, distances, values, numEdges, grad_z_init->v);
+
+    delete[] values;
+    delete[] distances;
   }
 
-  lsGradReconstruction(cz, distances, values, numEdges, grad_z->v);
+  grad_z->v[0] = grad_z_init->v[0];
+  grad_z->v[1] = grad_z_init->v[1];
+  grad_z->v[2] = 0;
 
-  delete[] values;
-  delete[] distances;
 }

@@ -25,7 +25,7 @@
 #include "fvhmcomponent_global.h"
 #include "sparsemat.h"
 #include "hydrocouplespatial.h"
-#include "core/abstractmodelcomponent.h"
+#include "temporal/abstracttimemodelcomponent.h"
 
 #include <QDateTime>
 #include <math.h>
@@ -35,13 +35,6 @@
 
 #ifdef USE_OPENMP
 #include <omp.h>
-#endif
-
-#ifdef USE_MPI
-#include <mpi.h>
-#else
-typedef int MPI_Comm
-typedef int MPI_Group
 #endif
 
 class FVHMComponentInfo;
@@ -84,13 +77,13 @@ namespace netCDF
 class FVHMComponent;
 
 typedef int (FVHMComponent::*PerformStepFunction)(double tStep, int &numIterations,
-                                                 double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
-                                                 double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
-                                                 double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
-                                                 double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
-                                                 bool &converged, QString &errorMessage);
+                                                  double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &minUVelSolvIters, int &maxUVelSolvIters,
+                                                  double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &minVVelSolvIters, int &maxVVelSolvIters,
+                                                  double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &minPressSolvIters, int &maxPressSolvIters,
+                                                  double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
+                                                  bool &converged, QString &errorMessage);
 
-class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
+class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractTimeModelComponent
 {
     friend class FVHMComponentInfo;
     friend struct TriCV;
@@ -107,13 +100,6 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
     Q_OBJECT
 
   public:
-
-    enum MPIMessageTags
-    {
-      InitializeCommunicator = 123,
-      SolveEquation = 124,
-      RecieveResults = 125
-    };
 
     enum AdaptiveTSMode
     {
@@ -162,8 +148,6 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
     double startDateTime() const;
 
     double endDateTime() const;
-
-    double currentDateTime() const;
 
   protected:
 
@@ -257,10 +241,6 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
 
     bool initializeMiscOptionsArguments(QString &message);
 
-    bool initializeMPIResources(QString &message);
-
-    void createAdaptedOutputFactories() override;
-
     void createInputs() override;
 
     void createInflowInput();
@@ -285,31 +265,31 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
 
     void getMinIOutputTime(const HydroCouple::IOutput *output, double &minTime);
 
-    void prepareForNextTimeStep();
+    void prepareForNextTimeStep(double &minU, double &maxU, double &minV, double &maxV, double &minH, double &maxH, double &minZ, double &maxZ);
 
     void setWetAndContCells();
 
 
     int performSimpleTimeStep(double tStep, int &numIterations,
-                                    double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
-                                    double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
-                                    double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
-                                    double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
-                                    bool &converged, QString &errorMessage);
+                              double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &minUVelSolvIters, int &maxUVelSolvIters,
+                              double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &minVVelSolvIters, int &maxVVelSolvIters,
+                              double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &minPressSolvIters, int &maxPressSolvIters,
+                              double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
+                              bool &converged, QString &errorMessage);
 
     int performSimpleCTimeStep(double tStep, int &numIterations,
-                                     double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
-                                     double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
-                                     double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
-                                     double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
-                                     bool &converged, QString &errorMessage);
+                               double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &minUVelSolvIters, int &maxUVelSolvIters,
+                               double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &minVVelSolvIters, int &maxVVelSolvIters,
+                               double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &minPressSolvIters, int &maxPressSolvIters,
+                               double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
+                               bool &converged, QString &errorMessage);
 
     int performPISOTimeStep(double tStep, int &numIterations,
-                                  double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
-                                  double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
-                                  double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
-                                  double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
-                                  bool &converged, QString &errorMessage);
+                            double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &minUVelSolvIters, int &maxUVelSolvIters,
+                            double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &minVVelSolvIters, int &maxVVelSolvIters,
+                            double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &minPressSolvIters, int &maxPressSolvIters,
+                            double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
+                            bool &converged, QString &errorMessage);
 
 
     bool neighbourIsWet(TriCV *cv, double wetCellDepth);
@@ -455,9 +435,9 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
     m_nextOutputTime = 0.0,
     m_RMSCourantNumber = 1.0,
     m_timeStepRelaxFactor = 0.9,
-    m_wetCellDepth = 1e-2,
-    m_wetCellNodeDepth = 1e-8,
-    m_viscousSubLayerDepth = 10e-16,
+    m_wetCellDepth = 10e-3,
+    m_wetCellNodeDepth = 10e-7,
+    m_viscousSubLayerDepth = 10e-10,
     m_viscosity = 1.004 *10e-6,
     m_uvelConvergenceTol = 1e-7,
     m_vvelConvergenceTol = 1e-7,
@@ -486,7 +466,7 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
     m_useWall = 1.0,
     m_epsilon = 0.0,
     m_maxWSEGradient = 3.0,
-    m_numFractionalSteps = 2.0,
+    m_numFractionalSteps = 3.0,
     m_wetDryFactor = 0.05;
 
     QDateTime m_qtDateTime;
@@ -507,11 +487,10 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
     m_printFrequencyCounter = 0,
     m_writeFrequency = 20,
     m_writeFrequencyCounter = 0,
-    m_numPressureCorrectionIterations = 1,
+    m_numPressureCorrectionIterations = 5,
     m_currentCoeff = 0,
     m_mpiSolverSplitThreshold = 100,
     m_numWetCells, m_numContCells;
-
 
     AdaptiveTSMode m_adaptiveTSMode = AdaptiveTSMode::MaxCourantNumber;
 
@@ -526,11 +505,6 @@ class FVHMCOMPONENT_EXPORT FVHMComponent : public AbstractModelComponent
     Octree *m_octree;
     PerformStepFunction performStep = nullptr;
 
-    //mpi stuff
-    MPI_Group m_ComponentMPIGroup , m_worldGroup;
-    MPI_Comm m_ComponentMPIComm;
-    bool m_mpiResourcesInitialized = false;
-    std::vector<int> m_allocatedProcesses;
 };
 
 Q_DECLARE_METATYPE(FVHMComponent*)

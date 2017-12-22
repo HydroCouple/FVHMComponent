@@ -175,9 +175,11 @@ struct FVHMCOMPONENT_EXPORT TriCV
 
     VectBC *grad_z = nullptr;
 
-    VectBC *grad_h = nullptr;
+    Vect *grad_z_init = nullptr;
 
-    //    VectBC *grad_zcorr = nullptr;
+    Vect *grad_h = nullptr;
+
+    Vect *grad_zcorr = nullptr;
 
     VectBC *grad_vel = nullptr;
 
@@ -386,8 +388,6 @@ struct FVHMCOMPONENT_EXPORT TriCV
     static void crossProduct(double u[], double v[], double out[]);
 
     void printDetails();
-
-  private:
 
     void calculateInitialWSEGradient();
 };

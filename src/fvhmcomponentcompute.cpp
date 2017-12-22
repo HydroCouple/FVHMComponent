@@ -67,9 +67,9 @@ double FVHMComponent::getNextTimeStep()
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-          for(int i = 0 ; i < m_numWetCells  ; i++)
+          for(int i = 0 ; i < m_numContCells  ; i++)
           {
-            int cvIndex = m_wetCells[i];
+            int cvIndex = m_contCells[i];
             TriCV *cv = m_controlVolumes[cvIndex];
 
             double cFactor = cv->getCourantFactor();
@@ -134,7 +134,7 @@ double FVHMComponent::getNextTimeStep()
     }
     else
     {
-      m_timeStep = m_timeStep - m_timeStep * m_maxTimeStepDecreaseCF;
+      estimatedTimeStep = estimatedTimeStep - estimatedTimeStep * m_maxTimeStepDecreaseCF;
     }
   }
 
@@ -294,20 +294,20 @@ void FVHMComponent::getMinIOutputTime(const HydroCouple::IOutput *output, double
   }
 }
 
-void FVHMComponent::prepareForNextTimeStep()
+void FVHMComponent::prepareForNextTimeStep(double &minU, double &maxU, double &minV, double &maxV, double &minH, double &maxH, double &minZ, double &maxZ)
 {
 
-  double maxV = std::numeric_limits<double>::lowest();
-  double minV = std::numeric_limits<double>::max();
+  maxV = std::numeric_limits<double>::lowest();
+  minV = std::numeric_limits<double>::max();
 
-  double maxU = std::numeric_limits<double>::lowest();
-  double minU = std::numeric_limits<double>::max();
+  maxU = std::numeric_limits<double>::lowest();
+  minU = std::numeric_limits<double>::max();
 
-  double maxH = std::numeric_limits<double>::lowest();
-  double minH = std::numeric_limits<double>::max();
+  maxH = std::numeric_limits<double>::lowest();
+  minH = std::numeric_limits<double>::max();
 
-  double maxZ = std::numeric_limits<double>::lowest();
-  double minZ = std::numeric_limits<double>::max();
+  maxZ = std::numeric_limits<double>::lowest();
+  minZ = std::numeric_limits<double>::max();
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
@@ -319,27 +319,20 @@ void FVHMComponent::prepareForNextTimeStep()
     cv->velResidual[0] = cv->velResidualIter[0];
     cv->velResidual[1] = cv->velResidualIter[1];
 
-    if(m_verbose && m_printFrequencyCounter <= 0)
-    {
-      maxU = max(maxU , cv->vel[0].value);
-      maxV = max(maxV , cv->vel[1].value);
+    maxU = max(maxU , cv->vel[0].value);
+    maxV = max(maxV , cv->vel[1].value);
 
-      minU = min(minU , cv->vel[0].value);
-      minV = min(minV , cv->vel[1].value);
+    minU = min(minU , cv->vel[0].value);
+    minV = min(minV , cv->vel[1].value);
 
-      maxH = max(maxH, cv->h->value);
-      minH = min(minH, cv->h->value);
+    maxH = max(maxH, cv->h->value);
+    minH = min(minH, cv->h->value);
 
-      maxZ = max(maxZ, cv->z->value);
-      minZ = min(minZ, cv->z->value);
-    }
+    maxZ = max(maxZ, cv->z->value);
+    minZ = min(minZ, cv->z->value);
 
     cv->copyVariablesToPrev();
   }
-
-  if(m_verbose && m_printFrequencyCounter <= 0)
-    printf("Time: %f, MinZ: %f, MaxZ: %f, MinH: %f, MaxH: %f, MinU: %f, MaxU: %f, MinV: %f, MaxV: %f\n" , m_currentDateTime, minZ, maxZ, minH, maxH, minU, maxU, minV, maxV);
-
 }
 
 void FVHMComponent::setWetAndContCells()
@@ -352,28 +345,16 @@ void FVHMComponent::setWetAndContCells()
     TriCV* cv = m_controlVolumes[i];
     double coeff = cv->h->value * cv->area / m_timeStep;
     cv->velCoeffs[0][0] = cv->velCoeffs[1][0] = coeff;
-    cv->isWetOrHasWetNeigh = 0;
-    cv->wetIndex = 0;
-    cv->contIndex = 0;
     cv->wetCellIndex = -1;
     cv->contCellIndex = -1;
-    cv->contResidualIter = 0.0;
-    cv->velResidualIter[0] = cv->velResidualIter[1] = 0.0;
-
-    for(int f = 0; f < 2 ; f++)
-    {
-      cv->friction[f] = 0.0;
-
-      for(int i = 0 ; i < cv->numEdges; i++)
-      {
-        cv->wallShearFriction[f][i] = 0.0;
-      }
-    }
+    cv->contResidualIter = cv->velResidualIter[0] = cv->velResidualIter[1] =
+        cv->isWetOrHasWetNeigh = cv->wetIndex = cv->contIndex = 0.0;
 
     if(cv->h->value > m_wetCellDepth)
     {
       cv->isWetOrHasWetNeigh = 1;
       cv->wetIndex = 1;
+      cv->contIndex = 1;
       cv->wetCellIndex = m_numWetCells; m_wetCells[m_numWetCells] = i; m_numWetCells++;
       cv->contCellIndex = m_numContCells; m_contCells[m_numContCells] = i; m_numContCells++;
     }
@@ -381,9 +362,9 @@ void FVHMComponent::setWetAndContCells()
     {
       for(int c = 0 ; c < 2; c++)
       {
-        cv->vel[c].value = 0.0;
         cv->prevIterVel[c] = 0.0;
         cv->velResidualIter[c] = 0.0;
+        cv->vel[c].value = 0.0;
       }
 
       bool cont = false;
@@ -417,7 +398,17 @@ void FVHMComponent::setWetAndContCells()
 
       if(cont)
       {
+        cv->contIndex = 1;
         cv->contCellIndex = m_numContCells; m_contCells[m_numContCells] = i; m_numContCells++;
+      }
+      else
+      {
+        cv->grad_h->zero();
+        cv->grad_z->zero();
+        cv->grad_vel[0].zero();
+        cv->grad_vel[1].zero();
+        cv->zCorrection = 0.0;
+        cv->grad_zcorr->zero();
       }
     }
   }
@@ -443,13 +434,12 @@ bool FVHMComponent::neighbourIsWet(TriCV *cv, double wetCellDepth)
   return false;
 }
 
-
 int FVHMComponent::performSimpleTimeStep(double tStep, int &numIterations,
-                                                              double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
-                                                              double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
-                                                              double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
-                                                              double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
-                                                              bool &converged, QString &errorMessage)
+                                         double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &minUVelSolvIters, int &maxUVelSolvIters,
+                                         double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &minVVelSolvIters, int &maxVVelSolvIters,
+                                         double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &minPressSolvIters,int &maxPressSolvIters,
+                                         double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
+                                         bool &converged, QString &errorMessage)
 {
 
   ErrorCode error = ErrorCode::NoError;
@@ -458,8 +448,7 @@ int FVHMComponent::performSimpleTimeStep(double tStep, int &numIterations,
 
   uvelRelResidualNormFin = vvelRelResidualNormFin = pressureRelRisdualNormFin =
       continuityRelResidualNormFin = uvelRelResidualNormInit = vvelRelResidualNormInit =
-      pressureRelRisdualNormInit = continuityRelResidualNormInit = aveNumUVelSolvIters =
-      aveNumVVelSolvIters = aveNumPressSolvIters = 0.0;
+      pressureRelRisdualNormInit = continuityRelResidualNormInit = 0.0;
 
   converged = false;
 
@@ -468,9 +457,31 @@ int FVHMComponent::performSimpleTimeStep(double tStep, int &numIterations,
 
   m_currentCoeff = m_currentCoeff == 0 ? 0 : 0;
 
+  //Friction
+  {
+#ifdef USE_OPENMP
+#pragma omp parallel sections
+#endif
+    {
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+      {
+        calculateFriction(0);
+      }
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+      {
+        calculateFriction(1);
+      }
+    }
+  }
+
   while (numIterations < m_itersPerTimeStep)
   {
-
     ErrorCode uerror = ErrorCode::NoError;
     ErrorCode verror = ErrorCode::NoError;
     QString uErrorMessage;
@@ -487,30 +498,6 @@ int FVHMComponent::performSimpleTimeStep(double tStep, int &numIterations,
 
     if (m_numWetCells)
     {
-
-      //Friction
-      {
-#ifdef USE_OPENMP
-#pragma omp parallel sections
-#endif
-        {
-
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-          {
-            calculateFriction(0);
-          }
-
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-          {
-            calculateFriction(1);
-          }
-        }
-      }
-
       //Solve Momentum
       {
 #ifdef USE_OPENMP
@@ -547,16 +534,19 @@ int FVHMComponent::performSimpleTimeStep(double tStep, int &numIterations,
           break;
         }
       }
-
     }
 
     calculateFaceVelocities();
 
     error = solvePressureCorrection(currentStep, pressureRelRisdualNormFin, 0.0, numPSolvIters, errorMessage);
 
-    aveNumUVelSolvIters += numUVelSolvIters;
-    aveNumVVelSolvIters += numVVelSolvIters;
-    aveNumPressSolvIters += numPSolvIters;
+    minUVelSolvIters = min(minUVelSolvIters, numUVelSolvIters);
+    minVVelSolvIters = min(minVVelSolvIters, numVVelSolvIters);
+    minPressSolvIters = min(minPressSolvIters,numPSolvIters);
+
+    maxUVelSolvIters = max(maxUVelSolvIters, numUVelSolvIters);
+    maxVVelSolvIters = max(maxVVelSolvIters, numVVelSolvIters);
+    maxPressSolvIters = max(maxPressSolvIters,numPSolvIters);
 
     if (error == ErrorCode::CriticalFailure)
     {
@@ -615,10 +605,6 @@ int FVHMComponent::performSimpleTimeStep(double tStep, int &numIterations,
 
     numIterations++;
   }
-
-  aveNumUVelSolvIters = aveNumUVelSolvIters / numIterations;
-  aveNumVVelSolvIters = aveNumVVelSolvIters / numIterations;
-  aveNumPressSolvIters = aveNumPressSolvIters / numIterations;
 
   if (error == ErrorCode::NoError)
   {
@@ -639,11 +625,11 @@ int FVHMComponent::performSimpleTimeStep(double tStep, int &numIterations,
 
 
 int FVHMComponent::performSimpleCTimeStep(double tStep, int &numIterations,
-                                                               double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
-                                                               double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
-                                                               double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
-                                                               double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
-                                                               bool &converged, QString &errorMessage)
+                                          double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &minUVelSolvIters, int &maxUVelSolvIters,
+                                          double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &minVVelSolvIters, int &maxVVelSolvIters,
+                                          double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &minPressSolvIters, int &maxPressSolvIters,
+                                          double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
+                                          bool &converged, QString &errorMessage)
 {
 
   ErrorCode error = ErrorCode::NoError;
@@ -652,15 +638,37 @@ int FVHMComponent::performSimpleCTimeStep(double tStep, int &numIterations,
 
   uvelRelResidualNormFin = vvelRelResidualNormFin = pressureRelRisdualNormFin =
       continuityRelResidualNormFin = uvelRelResidualNormInit = vvelRelResidualNormInit =
-      pressureRelRisdualNormInit = continuityRelResidualNormInit = aveNumUVelSolvIters =
-      aveNumVVelSolvIters = aveNumPressSolvIters = 0.0;
-
+      pressureRelRisdualNormInit = continuityRelResidualNormInit =0;
   converged = false;
 
   double fractStep = tStep / m_numFractionalSteps;
   double currentStep = fractStep;
 
   m_currentCoeff = m_currentCoeff == 0 ? 0 : 0;
+
+  //Friction
+  {
+#ifdef USE_OPENMP
+#pragma omp parallel sections
+#endif
+    {
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+      {
+        calculateFriction(0);
+      }
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+      {
+        calculateFriction(1);
+      }
+    }
+  }
+
 
   while (numIterations < m_itersPerTimeStep)
   {
@@ -682,28 +690,6 @@ int FVHMComponent::performSimpleCTimeStep(double tStep, int &numIterations,
     if (m_numWetCells)
     {
 
-      //Friction
-      {
-#ifdef USE_OPENMP
-#pragma omp parallel sections
-#endif
-        {
-
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-          {
-            calculateFriction(0);
-          }
-
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-          {
-            calculateFriction(1);
-          }
-        }
-      }
 
       //Solve Momentum
       {
@@ -741,16 +727,19 @@ int FVHMComponent::performSimpleCTimeStep(double tStep, int &numIterations,
           break;
         }
       }
-
     }
 
     calculateFaceVelocities();
 
     error = solvePressureCorrection(currentStep, pressureRelRisdualNormFin, 1.0, numPSolvIters, errorMessage);
 
-    aveNumUVelSolvIters += numUVelSolvIters;
-    aveNumVVelSolvIters += numVVelSolvIters;
-    aveNumPressSolvIters += numPSolvIters;
+    minUVelSolvIters = min(minUVelSolvIters, numUVelSolvIters);
+    minVVelSolvIters = min(minVVelSolvIters, numVVelSolvIters);
+    minPressSolvIters = min(minPressSolvIters,numPSolvIters);
+
+    maxUVelSolvIters = max(maxUVelSolvIters, numUVelSolvIters);
+    maxVVelSolvIters = max(maxVVelSolvIters, numVVelSolvIters);
+    maxPressSolvIters = max(maxPressSolvIters, numPSolvIters);
 
     if (error == ErrorCode::CriticalFailure)
     {
@@ -783,7 +772,6 @@ int FVHMComponent::performSimpleCTimeStep(double tStep, int &numIterations,
       }
     }
 
-
     calculateContinuityResiduals(currentStep, continuityRelResidualNormFin);
 
     if (numIterations == 0)
@@ -811,10 +799,6 @@ int FVHMComponent::performSimpleCTimeStep(double tStep, int &numIterations,
     numIterations++;
   }
 
-  aveNumUVelSolvIters = aveNumUVelSolvIters / numIterations;
-  aveNumVVelSolvIters = aveNumVVelSolvIters / numIterations;
-  aveNumPressSolvIters = aveNumPressSolvIters / numIterations;
-
   if (error == ErrorCode::NoError)
   {
     if (!converged)
@@ -833,11 +817,11 @@ int FVHMComponent::performSimpleCTimeStep(double tStep, int &numIterations,
 }
 
 int FVHMComponent::performPISOTimeStep(double tStep, int &numIterations,
-                                                            double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &aveNumUVelSolvIters,
-                                                            double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &aveNumVVelSolvIters,
-                                                            double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &aveNumPressSolvIters,
-                                                            double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
-                                                            bool &converged, QString &errorMessage)
+                                       double &uvelRelResidualNormInit, double &uvelRelResidualNormFin, int &minUVelSolvIters, int &maxUVelSolvIters,
+                                       double &vvelRelResidualNormInit, double &vvelRelResidualNormFin, int &minVVelSolvIters, int &maxVVelSolvIters,
+                                       double &pressureRelRisdualNormInit, double &pressureRelRisdualNormFin, int &minPressSolvIters, int &maxPressSolvIters,
+                                       double &continuityRelResidualNormInit, double &continuityRelResidualNormFin,
+                                       bool &converged, QString &errorMessage)
 {
   ErrorCode error = ErrorCode::NoError;
 
@@ -845,8 +829,7 @@ int FVHMComponent::performPISOTimeStep(double tStep, int &numIterations,
 
   uvelRelResidualNormFin = vvelRelResidualNormFin = pressureRelRisdualNormFin =
       continuityRelResidualNormFin = uvelRelResidualNormInit = vvelRelResidualNormInit =
-      pressureRelRisdualNormInit = continuityRelResidualNormInit = aveNumUVelSolvIters =
-      aveNumVVelSolvIters = aveNumPressSolvIters = 0.0;
+      pressureRelRisdualNormInit = continuityRelResidualNormInit = 0.0;
 
   converged = false;
 
@@ -854,6 +837,30 @@ int FVHMComponent::performPISOTimeStep(double tStep, int &numIterations,
   double currentStep = fractStep;
 
   m_currentCoeff = m_currentCoeff == 0 ? 0 : 0;
+
+
+  //Friction
+  {
+#ifdef USE_OPENMP
+#pragma omp parallel sections
+#endif
+    {
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+      {
+        calculateFriction(0);
+      }
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+      {
+        calculateFriction(1);
+      }
+    }
+  }
 
   while (numIterations < m_itersPerTimeStep)
   {
@@ -874,29 +881,6 @@ int FVHMComponent::performPISOTimeStep(double tStep, int &numIterations,
 
     if (m_numWetCells)
     {
-
-      //Friction
-      {
-#ifdef USE_OPENMP
-#pragma omp parallel sections
-#endif
-        {
-
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-          {
-            calculateFriction(0);
-          }
-
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-          {
-            calculateFriction(1);
-          }
-        }
-      }
 
       //Solve Momentum
       {
@@ -937,15 +921,19 @@ int FVHMComponent::performPISOTimeStep(double tStep, int &numIterations,
 
     }
 
-    calculateFaceVelocities();
-
     for(int m = 0; m < 2; m++)
     {
+      calculateFaceVelocities();
+
       error = solvePressureCorrection(currentStep, pressureRelRisdualNormFin, 0.0, numPSolvIters, errorMessage);
 
-      aveNumUVelSolvIters += numUVelSolvIters;
-      aveNumVVelSolvIters += numVVelSolvIters;
-      aveNumPressSolvIters += numPSolvIters;
+      minUVelSolvIters = min(minUVelSolvIters, numUVelSolvIters);
+      minVVelSolvIters = min(minVVelSolvIters, numVVelSolvIters);
+      minPressSolvIters = min(minPressSolvIters,numPSolvIters);
+
+      maxUVelSolvIters = max(maxUVelSolvIters, numUVelSolvIters);
+      maxVVelSolvIters = max(maxVVelSolvIters, numVVelSolvIters);
+      maxPressSolvIters = max(maxPressSolvIters, numPSolvIters);
 
       if (error == ErrorCode::CriticalFailure)
       {
@@ -1006,10 +994,6 @@ int FVHMComponent::performPISOTimeStep(double tStep, int &numIterations,
 
     numIterations++;
   }
-
-  aveNumUVelSolvIters = aveNumUVelSolvIters / numIterations;
-  aveNumVVelSolvIters = aveNumVVelSolvIters / numIterations;
-  aveNumPressSolvIters = aveNumPressSolvIters / numIterations;
 
   if (error == ErrorCode::NoError)
   {
@@ -1079,13 +1063,13 @@ FVHMComponent::ErrorCode FVHMComponent::solveMomentumEquations(double tStep, int
             //TVD
             if(evel > 0)
             {
-              double ru = calculateFluxLimiter(cv, i, wl_n, cv->grad_vel[uv], cvn->grad_vel[uv], cv->vel[uv].value, cvn->vel[uv].value, r_xi.x() , r_xi.y());
+              double ru = calculateFluxLimiter(cv, i, wl_n, cv->grad_vel[uv], cvn->grad_vel[uv], cv->vel[uv].value, cvn->vel[uv].value, r_xi.v[0] , r_xi.v[1]);
               a_p += tempCoeff * (1.0 - ru * wl_n);
               a_n += tempCoeff * ru * wl_n;
             }
             else
             {
-              double ru = calculateFluxLimiter(cv, i, wl_p, cvn->grad_vel[uv], cv->grad_vel[uv], cvn->vel[uv].value, cv->vel[uv].value, -r_xi.x() , -r_xi.y());
+              double ru = calculateFluxLimiter(cv, i, wl_p, cvn->grad_vel[uv], cv->grad_vel[uv], cvn->vel[uv].value, cv->vel[uv].value, -r_xi.v[0] , -r_xi.v[1]);
               a_p += tempCoeff *  ru * wl_p;
               a_n += tempCoeff *  (1.0 - ru * wl_p);
             }
@@ -1137,15 +1121,15 @@ FVHMComponent::ErrorCode FVHMComponent::solveMomentumEquations(double tStep, int
 
     //friction
 
-    if(!isInfOrNan(cv->friction[uv]))
+    //if(!isInfOrNan(cv->friction[uv]))
     {
-      friction = -1.0 * cv->friction[uv];
+      friction = -cv->friction[uv];
 
       if(m_useWall)
       {
         for(int f = 0 ; f < cv->numEdges; f++)
         {
-          friction += -1.0 * cv->wallShearFriction[uv][f];
+          friction -= cv->wallShearFriction[uv][f];
         }
       }
     }
@@ -1170,6 +1154,16 @@ FVHMComponent::ErrorCode FVHMComponent::solveMomentumEquations(double tStep, int
 #endif
   {
     error = mpiSolve(coeffMatrix, u_b, x, residuals, uvelRelResidualNorm, numSolvIters, errorMessage);
+  }
+
+  if(error)
+  {
+    for(int index = 0; index < m_numWetCells ; index++)
+    {
+      int cvIndex = m_wetCells[index];
+      TriCV *cv = m_controlVolumes[cvIndex];
+      cv->printDetails();
+    }
   }
 
 #ifdef USE_OPENMP
@@ -1363,18 +1357,18 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
           double rf = 0.0;
 
           //Darwish and Moukalled (2002)
-          {
-            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
-            rf = rf - 1.0;
-          }
+          //          {
+          //            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
+          //            rf = rf - 1.0;
+          //          }
 
           //Ubbink and Issa (1999)
-          //          {
-          //            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
-          //            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
-          //            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, dir,dir, 0.0);
-          //            rf = (phi_c - phi_u)/(phi_d - phi_c);
-          //          }
+          {
+            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
+            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
+            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, r_cdX, r_cdY, 0.0);
+            rf = (phi_c - phi_u)/(phi_d - phi_c);
+          }
 
           ru = max({0.0, min({2.0 * rf, (3.0 + rf) / 4.0 , 2.0})});
 
@@ -1410,18 +1404,18 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
           double rf = 0.0;
 
           //Darwish and Moukalled (2002)
-          {
-            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
-            rf = rf - 1.0;
-          }
+          //          {
+          //            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
+          //            rf = rf - 1.0;
+          //          }
 
           //Ubbink and Issa (1999)
-          //          {
-          //            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
-          //            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
-          //            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, dir,dir, 0.0);
-          //            rf = (phi_c - phi_u)/(phi_d - phi_c);
-          //          }
+          {
+            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
+            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
+            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, r_cdX, r_cdY, 0.0);
+            rf = (phi_c - phi_u)/(phi_d - phi_c);
+          }
 
           ru = rf > 0 ? min(rf,1.0) : 0.0;
 
@@ -1457,18 +1451,18 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
           double rf = 0.0;
 
           //Darwish and Moukalled (2002)
-          {
-            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
-            rf = rf - 1.0;
-          }
+          //          {
+          //            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
+          //            rf = rf - 1.0;
+          //          }
 
           //Ubbink and Issa (1999)
-          //          {
-          //          double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
-          //          double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
-          //            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, dir,dir, 0.0);
-          //            rf = (phi_c - phi_u)/(phi_d - phi_c);
-          //          }
+          {
+            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
+            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
+            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, r_cdX, r_cdY, 0.0);
+            rf = (phi_c - phi_u)/(phi_d - phi_c);
+          }
 
           ru = (rf + fabs(rf))/(1.0 + fabs(rf));
 
@@ -1513,8 +1507,8 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
           //          {
           //          double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
           //          double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
-          //            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, dir,dir, 0.0);
-          //            rf = (phi_c - phi_u)/(phi_d - phi_c);
+          //          double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, r_cdX, r_cdY, 0.0);
+          //          rf = (phi_c - phi_u)/(phi_d - phi_c);
           //          }
 
           ru = (rf + rf * rf)/(1 + rf * rf);
@@ -1523,7 +1517,7 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
           {
             //            ru = ru + Vect::dotProduct(gradFaceX / idwfactor, gradFaceY / idwfactor, 0.0, cv->df[faceIndex]) / du;
 
-            //            //1st order
+            //1st order
             //            {
             //              double maxRu = max(0.0, min(rf/idwfactor, 1.0/idwfactor));
             //              double minRu = 0.0;
@@ -1550,19 +1544,19 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
           double rf = 0.0;
 
           //Darwish and Moukalled (2002)
-          {
-            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
-            rf = rf - 1.0;
-          }
+          //          {
+          //            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
+          //            rf = rf - 1.0;
+          //          }
 
 
           //Ubbink and Issa (1999)
-          //          {
-          //          double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
-          //          double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
-          //            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, dir,dir, 0.0);
-          //            rf = (phi_c - phi_u)/(phi_d - phi_c);
-          //          }
+          {
+            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
+            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
+            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, r_cdX, r_cdY, 0.0);
+            rf = (phi_c - phi_u)/(phi_d - phi_c);
+          }
 
           ru = max(0.0, max(min(2.0 * rf , 1.0), min(rf,2.0)));
 
@@ -1598,19 +1592,19 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
           double rf = 0.0;
 
           //Darwish and Moukalled (2002)
-          {
-            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
-            rf = rf - 1.0;
-          }
+          //          {
+          //            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
+          //            rf = rf - 1.0;
+          //          }
 
 
           //Ubbink and Issa (1999)
-          //          {
-          //          double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
-          //          double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
-          //            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, dir,dir, 0.0);
-          //            rf = (phi_c - phi_u)/(phi_d - phi_c);
-          //          }
+          {
+            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
+            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
+            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, r_cdX, r_cdY, 0.0);
+            rf = (phi_c - phi_u)/(phi_d - phi_c);
+          }
 
           ru = max(0.0,min(min( min(2.0 * rf, (1.0 + 3.0 * rf)/4.0) ,(3.0 + rf)/4.0),2.0));
 
@@ -1645,18 +1639,18 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
           double rf = 0.0;
 
           //Darwish and Moukalled (2002)
-          {
-            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
-            rf = rf - 1.0;
-          }
+          //          {
+          //            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
+          //            rf = rf - 1.0;
+          //          }
 
           //Ubbink and Issa (1999)
-          //          {
-          //            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
-          //            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
-          //            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, dir,dir, 0.0);
-          //            rf = (phi_c - phi_u)/(phi_d - phi_c);
-          //          }
+          {
+            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
+            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
+            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, r_cdX, r_cdY, 0.0);
+            rf = (phi_c - phi_u)/(phi_d - phi_c);
+          }
 
           ru = rf <= 2.0 ? (2.0 * rf + rf*rf)/(2.0 + rf + rf*rf) : 1.0 ;
 
@@ -1691,18 +1685,18 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
           double rf = 0.0;
 
           //Darwish and Moukalled (2002)
-          {
-            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
-            rf = rf - 1.0;
-          }
+          //          {
+          //            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
+          //            rf = rf - 1.0;
+          //          }
 
           //Ubbink and Issa (1999)
-          //          {
-          //            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
-          //            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
-          //            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, dir,dir, 0.0);
-          //            rf = (phi_c - phi_u)/(phi_d - phi_c);
-          //          }
+          {
+            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
+            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
+            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, r_cdX, r_cdY, 0.0);
+            rf = (phi_c - phi_u)/(phi_d - phi_c);
+          }
 
           ru = rf <= 2.0 ? (4.0*rf + rf*rf*rf)/(4.0 + rf*rf + rf*rf*rf) : 1.0 ;
 
@@ -1737,19 +1731,19 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
           double rf = 0.0;
 
           //Darwish and Moukalled (2002)
-          {
-            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
-            rf = rf - 1.0;
-          }
+          //          {
+          //            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
+          //            rf = rf - 1.0;
+          //          }
 
 
           //Ubbink and Issa (1999)
-          //          {
-          //            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
-          //            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
-          //            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, dir,dir, 0.0);
-          //            rf = (phi_c - phi_u)/(phi_d - phi_c);
-          //          }
+          {
+            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
+            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
+            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, r_cdX, r_cdY, 0.0);
+            rf = (phi_c - phi_u)/(phi_d - phi_c);
+          }
 
           ru = (rf  + fabs(rf))/(1 + fabs(rf));
 
@@ -1784,18 +1778,18 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
           double rf = 0.0;
 
           //Darwish and Moukalled (2002)
-          {
-            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
-            rf = rf - 1.0;
-          }
+          //          {
+          //            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
+          //            rf = rf - 1.0;
+          //          }
 
           //Ubbink and Issa (1999)
-          //          {
-          //            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
-          //            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
-          //            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, dir,dir, 0.0);
-          //            rf = (phi_c - phi_u)/(phi_d - phi_c);
-          //          }
+          {
+            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
+            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
+            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, r_cdX, r_cdY, 0.0);
+            rf = (phi_c - phi_u)/(phi_d - phi_c);
+          }
 
           ru = (1.0 + rf)/(2.0);
 
@@ -1830,18 +1824,18 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
           double rf = 0.0;
 
           //Darwish and Moukalled (2002)
-          {
-            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
-            rf = rf - 1.0;
-          }
+          //          {
+          //            rf = Vect::dotProduct(2.0 * grad_c.v[0], 2.0 * grad_c.v[1], 0.0, r_cdX, r_cdY, 0.0) / du;
+          //            rf = rf - 1.0;
+          //          }
 
           //Ubbink and Issa (1999)
-          //          {
-          //            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
-          //            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
-          //            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, dir,dir, 0.0);
-          //            rf = (phi_c - phi_u)/(phi_d - phi_c);
-          //          }
+          {
+            double gradFaceX = (1.0 - idwfactor)* grad_c.v[0] + idwfactor * grad_d.v[0];
+            double gradFaceY = (1.0 - idwfactor)* grad_c.v[1] + idwfactor * grad_d.v[1];
+            double phi_u = phi_d - 2.0 * Vect::dotProduct(gradFaceX, gradFaceY, 0.0, r_cdX, r_cdY, 0.0);
+            rf = (phi_c - phi_u)/(phi_d - phi_c);
+          }
 
           ru = (1.0 + rf)/(2.0);
 
@@ -1877,13 +1871,14 @@ double FVHMComponent::calculateFluxLimiter(const TriCV* cv, int faceIndex, doubl
 
 FVHMComponent::ErrorCode FVHMComponent::solvePressureCorrection(double tStep, double &pressureRelResidualNorm, double minorTermsCoeff, int &numSolvIters, QString &errorMessage)
 {
+  numSolvIters = 0;
 
-  ErrorCode error;
+  ErrorCode error = ErrorCode::NoError;
   double *x = new double[m_numContCells];
   double *h_b = new double[m_numContCells];
   double *residuals = new double[m_numContCells];
-  SparseMatrix coeffMatrix(0,m_numContCells - 1,m_numContCells, 4);
 
+  SparseMatrix coeffMatrix(0,m_numContCells - 1,m_numContCells, 4);
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
@@ -1905,10 +1900,10 @@ FVHMComponent::ErrorCode FVHMComponent::solvePressureCorrection(double tStep, do
 
     for(int e = 0; e < cv->numEdges; e++)
     {
-      sumEdgeCoeffs += cv->velCoeffs[m_currentCoeff][e+1];
+      sumEdgeCoeffs += cv->velCoeffs[0][e+1];
     }
 
-    double coeffucv = cv->velCoeffs[m_currentCoeff][0] + minorTermsCoeff * sumEdgeCoeffs;
+    double coeffucv = cv->velCoeffs[0][0] + minorTermsCoeff * sumEdgeCoeffs;
 
     double *coefficients = new double[cv->numEdges + 1]();
 
@@ -1921,12 +1916,12 @@ FVHMComponent::ErrorCode FVHMComponent::solvePressureCorrection(double tStep, do
 
       int cvnIndex = cv->nTris[i];
 
-      double wl_n = cv->w_l[i];
-      double wl_p = 1.0 - wl_n;
-
       if(cvnIndex > -1)
       {
         TriCV *cvn = m_controlVolumes[cvnIndex];
+        double wl_n = cv->w_l[i];
+        double wl_p = 1.0 - wl_n;
+        double h_n = 0.0;
 
         if(cv->wetIndex && cvn->wetIndex)
         {
@@ -1934,22 +1929,28 @@ FVHMComponent::ErrorCode FVHMComponent::solvePressureCorrection(double tStep, do
 
           for(int e = 0; e < cvn->numEdges; e++)
           {
-            sumEdgeCoeffs += cvn->velCoeffs[m_currentCoeff][e+1];
+            sumEdgeCoeffs += cvn->velCoeffs[0][e+1];
           }
 
-          double coeffucvn = cvn->velCoeffs[m_currentCoeff][0] + minorTermsCoeff * sumEdgeCoeffs;
+          double coeffucvn = cvn->velCoeffs[0][0] + minorTermsCoeff * sumEdgeCoeffs;
 
+          double A_e = (wl_p * cv->area / coeffucv + wl_n * cvn->area / coeffucvn);
 
-          double A_e_cv = wl_p * cv->area / coeffucv;
-          double A_e_cvn = wl_n * cvn->area / coeffucvn;
-
-          double velCorrection = -g * (A_e_cv + A_e_cvn) *  edgeDepth / cv->r_xi_l[i];
+          double velCorrection = -g * A_e *  cv->h->value / cv->r_xi_l[i];
 
           h_p -= edgeDepth * eta * velCorrection * m_velocityRelaxFactor;
-          double h_n = edgeDepth * eta * velCorrection  * m_velocityRelaxFactor;
+          h_n += edgeDepth * eta * velCorrection * m_velocityRelaxFactor;
 
-          coefficients[i+1] = h_n;
         }
+
+        h_p += wl_p * evel * eta;
+        h_n += wl_n * evel * eta;
+
+        double zcorrX = wl_p * cv->grad_zcorr->v[0] + wl_n * cvn->grad_zcorr->v[0];
+        double zcorrY = wl_p * cv->grad_zcorr->v[1] + wl_n * cvn->grad_zcorr->v[1];
+        constTerm -= evel * eta * Vect::dotProduct(zcorrX, zcorrY, 0.0, cv->df[i]);
+
+        coefficients[i+1] = h_n;
       }
 
       double edgeFlow = eta * edgeDepth * evel;
@@ -1986,7 +1987,9 @@ FVHMComponent::ErrorCode FVHMComponent::solvePressureCorrection(double tStep, do
     x[cv->contCellIndex] = zCorrEst;
   }
 
-  error = mpiSolve(coeffMatrix, h_b, x, residuals, pressureRelResidualNorm, numSolvIters, errorMessage);
+  int numIters = 0;
+  error = mpiSolve(coeffMatrix, h_b, x, residuals, pressureRelResidualNorm, numIters, errorMessage);
+  numSolvIters = max(numIters, numSolvIters);
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
@@ -2005,47 +2008,41 @@ FVHMComponent::ErrorCode FVHMComponent::solvePressureCorrection(double tStep, do
     {
       int cvIndex = m_contCells[rc];
       TriCV * cv = m_controlVolumes[cvIndex];
-
-      if(cv->wetIndex)
-        cv->printDetails();
+      cv->printDetails();
     }
   }
 
-  delete[] residuals;
-  delete[] h_b;
-
-
   //Cheap
-  {
-    //int count = 0;
-    //#ifdef USE_OPENMP
-    //#pragma omp parallel for
-    //#endif
-    //    for(int index = 0 ; index < m_numCells ; index++)
-    //    {
+  //  for(int it = 0; it < m_numPressureCorrectionIterations; it++)
+  //  {
+  //#ifdef USE_OPENMP
+  //#pragma omp parallel for
+  //#endif
+  //    for(int index = 0 ; index < m_numContCells ; index++)
+  //    {
+  //      int cvnIndex  = m_contCells[index];
+  //      TriCV *cv = m_controlVolumes[cvnIndex];
 
-    //      TriCV *cv = m_controlVolumes[index];
+  //      double zCorrection = 0.0;
 
-    //      {
-    //        double zCorrection = 0.0;
+  //      zCorrection = cv->inflowOutflow + (cv->prevH->value - cv->h->value) * cv->area / tStep;
 
-    //        zCorrection = cv->inflow + (cv->prevH->value - cv->h->value) * cv->area / tStep;
+  //      for(int i = 0; i < cv->numEdges; i++)
+  //      {
+  //        zCorrection -= cv->faceNormalVels[i].value * cv->faceDepths[i].value * cv->r_eta[i];
+  //      }
 
-    //        for(int i = 0; i < cv->numEdges; i++)
-    //        {
-    //          zCorrection -= cv->faceNormalVels[i].value * cv->faceDepths[i].value * cv->r_eta[i];
-    //        }
-
-    //        zCorrection =  zCorrection * tStep / cv->area;
-    //        x[cv->index] = zCorrection;
-    //        cv->zCorrection = zCorrection;
-    //      }
-    //    }
-  }
+  //      zCorrection =  zCorrection * tStep / cv->area;
+  //      x[cv->index] = zCorrection;
+  //      cv->zCorrection = zCorrection;
+  //    }
+  //  }
 
   pressureRelResidualNorm = l2Norm(x,m_numContCells);
 
   delete[] x;
+  delete[] residuals;
+  delete[] h_b;
 
   return error;
 }
@@ -2173,51 +2170,30 @@ void FVHMComponent::calculateFriction(int uv)
 
 void FVHMComponent::calculateFriction(TriCV *cv, int uv)
 {
-  if(fabs(cv->vel[uv].value - 0.0) > m_epsilon)
+  double cf = g * cv->mannings * cv->mannings / pow(cv->h->value, 1.0/3.0);
+  double umag = hypot(cv->vel[0].value, cv->vel[1].value);
+  double frictionVel = sqrt(cf * umag * umag);
+
+  double friction =  cf * umag * cv->vel[uv].value * cv->area;
+  cv->friction[uv] = friction;
+
+  if(m_useWall)
   {
-    double cf = g * cv->mannings * cv->mannings / pow(cv->h->value, 1.0/3.0);
-    double umag = hypot(cv->vel[0].value, cv->vel[1].value);
-    double frictionVel = sqrt(cf * umag * umag);
-
-    double friction =  cf * umag * cv->vel[uv].value * cv->area;
-    cv->friction[uv] = friction;
-
-    if(m_useWall)
+    for(int i = 0 ; i < cv->numEdges ; i++)
     {
-      for(int i = 0 ; i < cv->numEdges ; i++)
+      //int xy = (uv + 1) % 2;
+      double relp = cv->r_e_l_p[i];//.v[xy];
+
+      if(cv->faceNormalVels[i].calculateWallShearStress && relp > 0.0)
       {
-        //      int xy = (uv + 1) % 2;
-        double relp = cv->r_e_l_p[i];//.v[xy];
-
-        if(cv->faceNormalVels[i].calculateWallShearStress && relp > 0.0)
-        {
-          double yp = frictionVel * relp  / m_viscosity;
-          double wallShear = frictionVel * 0.41 * cv->vel[uv].value * cv->faceDepths[i].value * cv->r_eta[i] / log(9.758 * yp);
-          cv->wallShearFriction[uv][i] = wallShear;
-        }
-        else
-        {
-          cv->wallShearFriction[uv][i] = 0.0;
-        }
+        double yp = frictionVel * relp  / m_viscosity;
+        double wallShear = frictionVel * 0.41 * cv->vel[uv].value * cv->faceDepths[i].value * cv->r_eta[i] / log(9.758 * yp);
+        cv->wallShearFriction[uv][i] = wallShear;
       }
-    }
-    else
-    {
-      cv->friction[uv] = 0.0;
-
-      for(int i = 0 ; i < cv->numEdges; i++)
+      else
       {
         cv->wallShearFriction[uv][i] = 0.0;
       }
-    }
-  }
-  else
-  {
-    cv->friction[uv] = 0.0;
-
-    for(int i = 0 ; i < cv->numEdges; i++)
-    {
-      cv->wallShearFriction[uv][i] = 0.0;
     }
   }
 }
@@ -2258,7 +2234,6 @@ void FVHMComponent::calculateCellVelocityGradients()
     for (int i = 0; i < m_numContCells; i++)
     {
       int cvIndex = m_contCells[i];
-
       TriCV *cv = m_controlVolumes[cvIndex];
 
       double drux = cv->grad_vel[0].v[0];
@@ -2428,25 +2403,22 @@ void FVHMComponent::calculateCellWSEGradients()
             double tmpzx = fabs(cv->grad_z->v[0] - gradzx);
             double tmpzy = fabs(cv->grad_z->v[1] - gradzy);
 
-
+            if (tmpzx > zx)
             {
-              if (tmpzx > zx)
-              {
 #ifdef USE_OPENMP
 #pragma omp atomic read
 #endif
-                zx = tmpzx;
-              }
-
-              if (tmpzy > zy)
-              {
-#ifdef USE_OPENMP
-#pragma omp atomic read
-#endif
-                zy = tmpzy;
-              }
-
+              zx = tmpzx;
             }
+
+            if (tmpzy > zy)
+            {
+#ifdef USE_OPENMP
+#pragma omp atomic read
+#endif
+              zy = tmpzy;
+            }
+
           }
         }
 
@@ -2492,24 +2464,20 @@ void FVHMComponent::calculateCellWSEGradients()
           double tmphx = fabs(cv->grad_h->v[0] - gradhx);
           double tmphy = fabs(cv->grad_h->v[1] - gradhy);
 
-
+          if (tmphx > hx)
           {
-            if (tmphx > hx)
-            {
 #ifdef USE_OPENMP
 #pragma omp atomic read
 #endif
-              hx = tmphx;
-            }
+            hx = tmphx;
+          }
 
-            if (tmphy > hy)
-            {
+          if (tmphy > hy)
+          {
 #ifdef USE_OPENMP
 #pragma omp atomic read
 #endif
-              hy = tmphy;
-            }
-
+            hy = tmphy;
           }
         }
 
@@ -2522,76 +2490,87 @@ void FVHMComponent::calculateCellWSEGradients()
         printf("dz_x: %f\tdz_y: %f\tNum iters: %i\n", hx, hy, iters);
       }
     }
+
+#ifdef USE_OPENMP
+#pragma omp section
+#endif
+    {
+      calculateCellZCorrGradients();
+    }
   }
 
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-  for (int i = 0; i < m_numContCells; i++)
+  for (int i = 0; i < m_numCells; i++)
   {
-    int cvIndex = m_contCells[i];
-    TriCV *cv = m_controlVolumes[cvIndex];
-    cv->calculateNodeElevations();
+    TriCV *cv = m_controlVolumes[i];
     cv->calculateEdgeDepths();
+    cv->calculateNodeElevations();
   }
 
 }
 
 void FVHMComponent::calculateCellZCorrGradients()
 {
-  //  double zx = 0.0;
-  //  double zy = 0.0;
+  double zx = 0.0;
+  double zy = 0.0;
 
-  //  int iters = 0;
+  int iters = 0;
 
-  //  do
-  //  {
+  do
+  {
 
-  //    zx = 0.0;
-  //    zy = 0.0;
-
-  //#ifdef USE_OPENMP
-  //#pragma omp parallel for
-  //#endif
-  //    for (int i = 0; i < m_numCells; i++)
-  //    {
-  //      TriCV *cv = m_controlVolumes[i];
-
-  //      double gradzx = cv->grad_zcorr->v[0];
-  //      double gradzy = cv->grad_zcorr->v[1];
-
-  //      cv->calculateZCorrGradient();
-
-  //      double tmpzx = fabs(cv->grad_zcorr->v[0] - gradzx);
-  //      double tmpzy = fabs(cv->grad_zcorr->v[1] - gradzy);
+    zx = 0.0;
+    zy = 0.0;
 
 
-  //      {
-  //        if (tmpzx > zx)
-  //        {
-  //#ifdef USE_OPENMP
-  //#pragma omp atomic read
-  //#endif
-  //          zx = tmpzx;
-  //        }
+#ifdef USE_OPENMP
+#pragma omp parallel for
+#endif
+    for (int i = 0; i < m_numContCells; i++)
+    {
+      int cvIndex = m_contCells[i];
+      TriCV *cv = m_controlVolumes[cvIndex];
 
-  //        if (tmpzy > zy)
-  //        {
-  //#ifdef USE_OPENMP
-  //#pragma omp atomic read
-  //#endif
-  //          zy = tmpzy;
-  //        }
-  //      }
-  //    }
+      double gradzx = cv->grad_zcorr->v[0];
+      double gradzy = cv->grad_zcorr->v[1];
 
-  //    iters++;
+      cv->calculateZCorrGradient();
 
-  //  } while (zx > 1e-6 && zy > 1e-6 && iters < 1000);
+      double tmpzx = fabs(cv->grad_zcorr->v[0] - gradzx);
+      double tmpzy = fabs(cv->grad_zcorr->v[1] - gradzy);
 
-  //  if (iters > 300)
-  //    printf("dzcorr_x: %f\tdzcorr_y: %f\tNum iters: %i\n", zx, zy, iters);
+
+      {
+        if (tmpzx > zx)
+        {
+#ifdef USE_OPENMP
+#pragma omp atomic read
+#endif
+          zx = tmpzx;
+        }
+
+        if (tmpzy > zy)
+        {
+#ifdef USE_OPENMP
+#pragma omp atomic read
+#endif
+          zy = tmpzy;
+        }
+
+      }
+    }
+
+    iters++;
+
+  } while (zx > 1e-6 && zy > 1e-6 && iters < 1000);
+
+  if (iters >= 1000)
+  {
+    printf("dzcorr_x: %f\tdzcorr_y: %f\tNum iters: %i\n", zx, zy, iters);
+  }
 }
 
 FVHMComponent::ErrorCode FVHMComponent::mpiSolve(const SparseMatrix &A, const double b[], double x[],
@@ -2602,7 +2581,7 @@ FVHMComponent::ErrorCode FVHMComponent::mpiSolve(const SparseMatrix &A, const do
 
   if(mpiProcessRank() == 0)
   {
-    int numMPIProcs = m_allocatedProcesses.size();
+    int numMPIProcs = m_mpiAllocatedProcessesArray.size();
     int rowsPerProc = A.rowCount() / numMPIProcs;
     int remRows = A.rowCount() - rowsPerProc * numMPIProcs;
 
@@ -2613,11 +2592,12 @@ FVHMComponent::ErrorCode FVHMComponent::mpiSolve(const SparseMatrix &A, const do
     //divide and conquer
     else
     {
+
       int start = rowsPerProc + remRows;
 
-      for(int i = 1; i < numMPIProcs ; i++)
+      for(int i = 1; i < m_mpiAllocatedProcessesArray.size() ; i++)
       {
-        int procRank =  m_allocatedProcesses[i];
+        int procRank =  m_mpiAllocatedProcessesArray[i];
 
         int ilower = start + (i-1) * rowsPerProc;
         int iupper = ilower + rowsPerProc - 1;
@@ -2638,7 +2618,7 @@ FVHMComponent::ErrorCode FVHMComponent::mpiSolve(const SparseMatrix &A, const do
           serializedData[counter] = x[r]; counter++;
         }
 
-        MPI_Send(serializedData, size, MPI_DOUBLE, procRank, SolveEquation, MPI_COMM_WORLD);
+        MPI_Send(serializedData, size, MPI_DOUBLE, procRank, 1001, MPI_COMM_WORLD);
 
         delete[] serializedData;
       }
@@ -2646,9 +2626,9 @@ FVHMComponent::ErrorCode FVHMComponent::mpiSolve(const SparseMatrix &A, const do
       result = solve(m_ComponentMPIComm, A, A.ilower(), start - 1, b, x, residuals, relativeResidualNorm, numIterations);
 
       //recieve solutions
-      for(int i = 1; i < numMPIProcs ; i++)
+      for(int i = 1; i < m_mpiAllocatedProcessesArray.size() ; i++)
       {
-        int procRank =  m_allocatedProcesses[i];
+        int procRank =  m_mpiAllocatedProcessesArray[i];
 
         int ilower = start + (i-1) * rowsPerProc;
         int iupper = ilower + rowsPerProc - 1;
@@ -2657,7 +2637,7 @@ FVHMComponent::ErrorCode FVHMComponent::mpiSolve(const SparseMatrix &A, const do
         double *values = new double[bufferSize];
 
         MPI_Status status;
-        MPI_Recv(values,bufferSize,MPI_DOUBLE,procRank,SolveEquation,MPI_COMM_WORLD,&status);
+        MPI_Recv(values, bufferSize, MPI_DOUBLE, procRank, 1001, MPI_COMM_WORLD, &status);
 
         result = max(result, (int)values[0]);
         relativeResidualNorm = max(relativeResidualNorm, values[1]);

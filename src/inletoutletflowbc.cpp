@@ -108,121 +108,162 @@ void InletFlowBCArgument::prepare()
 
 void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTimeStep)
 {
-  const std::vector<TriCV*> & controlVolumes = m_modelComponent->controlVolumes();
-
-  if(m_times.size())
+  if(m_geometries.size() && m_edges.size())
   {
-    int index = findDateTimeIndex(dateTime);
+    const std::vector<TriCV*> & controlVolumes = m_modelComponent->controlVolumes();
 
-    if(index > -1)
+    if(m_times.size())
     {
-      double dtu = m_times[index]->modifiedJulianDay();
+      int index = findDateTimeIndex(dateTime);
 
-      if(dtu == dateTime)
+      if(index > -1)
+      {
+        double dtu = m_times[index]->modifiedJulianDay();
+
+        if(dtu == dateTime)
+        {
+          for(size_t i = 0; i < m_geometries.size() ; i++)
+          {
+            HCGeometry* geometry = m_geometries[i].data();
+            set<Edge*> & edges = m_edges[geometry];
+
+            double value = (*this)(index ,i);
+            double count = (double)edges.size();
+
+            if(count > 0.0)
+            {
+              value = min(- value / count , 0.0);
+
+              for(Edge *edge : edges)
+              {
+                HCPolygon *tri = edge->leftInternal();
+                TriCV *cv = controlVolumes[tri->index()];
+
+                int faceIndex = edge->marker();
+
+                VarBC &edgeDepth = cv->faceDepths[faceIndex];
+
+                double denom = edgeDepth.value * cv->r_eta[faceIndex];
+                FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
+
+                double vel = value/denom;
+
+                if(cv->wetIndex && fabs(denom - 0.0) > std::numeric_limits<double>::epsilon() && fabs(vel) <= 4.0)
+                {
+                  faceVel.value =  vel;
+                  faceVel.vel->v[0] = vel * cv->e_n[faceIndex].v[0];
+                  faceVel.vel->v[1] = vel * cv->e_n[faceIndex].v[1];
+                  faceVel.associatedValue = value;
+
+                  if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+                    printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",value,vel,faceVel.vel->v[0], faceVel.vel->v[1], cv->faceDepths[faceIndex].value);
+                }
+                else
+                {
+                  faceVel.vel->v[0] = 0.0;
+                  faceVel.vel->v[1] = 0.0;
+                  faceVel.value = 0.0;
+                  faceVel.associatedValue = 0.0;
+                  cv->inflowOutflow -= value;
+                }
+              }
+            }
+          }
+        }
+        else if(index - 1 > -1)
+        {
+          double dtl = m_times[index - 1]->modifiedJulianDay();
+          double factor  = (dateTime - dtl) / (dtu - dtl);
+
+          for(size_t i = 0; i < m_geometries.size() ; i++)
+          {
+            HCGeometry *geometry = m_geometries[i].data();
+            set<Edge*> & edges = m_edges[geometry];
+
+            double valueu = (*this)(index,i);
+            double valuel = (*this)(index - 1,i);
+
+            double value = valuel + factor * (valueu - valuel);
+
+            double count = (double)edges.size();
+
+            if(count > 0)
+            {
+              value = min(-1.0 * value / count , 0.0);
+
+              for(Edge *edge : edges)
+              {
+                HCPolygon *tri = edge->leftInternal();
+                TriCV *cv = controlVolumes[tri->index()];
+                int faceIndex = edge->marker();
+
+                VarBC &edgeDepth = cv->faceDepths[faceIndex];
+                double denom = edgeDepth.value * cv->r_eta[faceIndex];
+                FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
+
+                double vel = value / denom;
+
+                if(cv->wetIndex && fabs(denom - 0.0) > std::numeric_limits<double>::epsilon() && fabs(vel) <= 4.0)
+                {
+                  faceVel.value =  vel * 1.00000;
+                  faceVel.vel->v[0] = vel * cv->e_n[faceIndex].v[0] * 1.00000;
+                  faceVel.vel->v[1] = vel * cv->e_n[faceIndex].v[1] * 1.00000;
+                  faceVel.associatedValue = value;
+
+                  if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+                    printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",value,vel,faceVel.vel->v[0], faceVel.vel->v[1], cv->faceDepths[faceIndex].value);
+                }
+                else
+                {
+                  vel = 0.0;
+                  faceVel.vel->v[0] = 0.0;
+                  faceVel.vel->v[1] = 0.0;
+                  faceVel.value = 0.0;
+                  faceVel.associatedValue = 0.0;
+                  cv->inflowOutflow -= value;
+
+                  if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+                    printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",value,vel,faceVel.vel->v[0], faceVel.vel->v[1], cv->faceDepths[faceIndex].value);
+                }
+              }
+            }
+          }
+        }
+      }
+      else
       {
         for(size_t i = 0; i < m_geometries.size() ; i++)
         {
           HCGeometry* geometry = m_geometries[i].data();
           set<Edge*> & edges = m_edges[geometry];
 
-          double value = (*this)(index ,i);
-          double count = (double)edges.size();
-
-          if(count > 0.0)
+          for(Edge *edge : edges)
           {
-            value = min(- value / count , 0.0);
+            HCPolygon *tri = edge->leftInternal();
+            TriCV *cv = controlVolumes[tri->index()];
+            int faceIndex = edge->marker();
 
-            for(Edge *edge : edges)
+            VarBC &edgeDepth = cv->faceDepths[faceIndex];
+            double denom = edgeDepth.value * cv->r_eta[faceIndex];
+
+            FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
+
+            if(cv->wetIndex && edgeDepth.value > 1e-3)
             {
-              HCPolygon *tri = edge->leftInternal();
-              TriCV *cv = controlVolumes[tri->index()];
+              double vel = min(m_defaultValue / denom , 0.0);
 
-              int faceIndex = edge->marker();
-
-              VarBC &edgeDepth = cv->faceDepths[faceIndex];
-
-              double denom = edgeDepth.value * cv->r_eta[faceIndex];
-              FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
-
-              double vel = value/denom;
-
-              if(cv->wetIndex && fabs(denom - 0.0) > std::numeric_limits<double>::epsilon() && fabs(vel) <= 4.0)
-              {
-                faceVel.value =  vel;
-                faceVel.vel->v[0] = vel * cv->e_n[faceIndex].v[0];
-                faceVel.vel->v[1] = vel * cv->e_n[faceIndex].v[1];
-                faceVel.associatedValue = value;
-
-                if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                  printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",value,vel,faceVel.vel->v[0], faceVel.vel->v[1], cv->faceDepths[faceIndex].value);
-              }
-              else
-              {
-                faceVel.vel->v[0] = 0.0;
-                faceVel.vel->v[1] = 0.0;
-                faceVel.value = 0.0;
-                faceVel.associatedValue = 0.0;
-                cv->inflowOutflow -= value;
-              }
+              faceVel.value = vel * 1.00000;
+              faceVel.vel->v[0] = vel * cv->e_n[faceIndex].v[0] * 1.00000;
+              faceVel.vel->v[1] = vel * cv->e_n[faceIndex].v[1] * 1.00000;
+              faceVel.associatedValue = min(m_defaultValue,0.0);
             }
-          }
-        }
-      }
-      else if(index - 1 > -1)
-      {
-        double dtl = m_times[index - 1]->modifiedJulianDay();
-        double factor  = (dateTime - dtl) / (dtu - dtl);
-
-        for(size_t i = 0; i < m_geometries.size() ; i++)
-        {
-          HCGeometry *geometry = m_geometries[i].data();
-          set<Edge*> & edges = m_edges[geometry];
-
-          double valueu = (*this)(index,i);
-          double valuel = (*this)(index - 1,i);
-
-          double value = valuel + factor * (valueu - valuel);
-
-          double count = (double)edges.size();
-
-          if(count > 0)
-          {
-            value = min(-1.0 * value / count , 0.0);
-
-            for(Edge *edge : edges)
+            else
             {
-              HCPolygon *tri = edge->leftInternal();
-              TriCV *cv = controlVolumes[tri->index()];
-              int faceIndex = edge->marker();
-
-              VarBC &edgeDepth = cv->faceDepths[faceIndex];
-              double denom = edgeDepth.value * cv->r_eta[faceIndex];
-              FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
-
-              double vel = value / denom;
-
-              if(cv->wetIndex && fabs(denom - 0.0) > std::numeric_limits<double>::epsilon() && fabs(vel) <= 4.0)
-              {
-                faceVel.value =  vel * 1.00000;
-                faceVel.vel->v[0] = vel * cv->e_n[faceIndex].v[0] * 1.00000;
-                faceVel.vel->v[1] = vel * cv->e_n[faceIndex].v[1] * 1.00000;
-                faceVel.associatedValue = value;
-
-                if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                  printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",value,vel,faceVel.vel->v[0], faceVel.vel->v[1], cv->faceDepths[faceIndex].value);
-              }
-              else
-              {
-                vel = 0.0;
-                faceVel.vel->v[0] = 0.0;
-                faceVel.vel->v[1] = 0.0;
-                faceVel.value = 0.0;
-                faceVel.associatedValue = 0.0;
-                cv->inflowOutflow -= value;
-
-                if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-                  printf("FVHM Q: %f\tV: %f\tVx: %f\tVy: %f\tEdgeDepth: %f\n",value,vel,faceVel.vel->v[0], faceVel.vel->v[1], cv->faceDepths[faceIndex].value);
-              }
+              faceVel.vel->v[0] = 0.0;
+              faceVel.vel->v[1] = 0.0;
+              faceVel.value = 0.0;
+              faceVel.associatedValue = 0.0;
+              cv->inflowOutflow += m_defaultValue;
             }
           }
         }
@@ -267,44 +308,6 @@ void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTi
       }
     }
   }
-  else
-  {
-    for(size_t i = 0; i < m_geometries.size() ; i++)
-    {
-      HCGeometry* geometry = m_geometries[i].data();
-      set<Edge*> & edges = m_edges[geometry];
-
-      for(Edge *edge : edges)
-      {
-        HCPolygon *tri = edge->leftInternal();
-        TriCV *cv = controlVolumes[tri->index()];
-        int faceIndex = edge->marker();
-
-        VarBC &edgeDepth = cv->faceDepths[faceIndex];
-        double denom = edgeDepth.value * cv->r_eta[faceIndex];
-
-        FaceNormVelBC &faceVel = cv->faceNormalVels[faceIndex];
-
-        if(cv->wetIndex && edgeDepth.value > 1e-3)
-        {
-          double vel = min(m_defaultValue / denom , 0.0);
-
-          faceVel.value = vel * 1.00000;
-          faceVel.vel->v[0] = vel * cv->e_n[faceIndex].v[0] * 1.00000;
-          faceVel.vel->v[1] = vel * cv->e_n[faceIndex].v[1] * 1.00000;
-          faceVel.associatedValue = min(m_defaultValue,0.0);
-        }
-        else
-        {
-          faceVel.vel->v[0] = 0.0;
-          faceVel.vel->v[1] = 0.0;
-          faceVel.value = 0.0;
-          faceVel.associatedValue = 0.0;
-          cv->inflowOutflow += m_defaultValue;
-        }
-      }
-    }
-  }
 }
 
 
@@ -330,97 +333,131 @@ void OutletFlowBCArgument::prepare()
 
 void OutletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTimeStep)
 {
-  const std::vector<TriCV*> & controlVolumes = m_modelComponent->controlVolumes();
 
-  if(m_times.size())
+  if(m_geometries.size() && m_edges.size())
   {
-    int index = findDateTimeIndex(dateTime);
+    const std::vector<TriCV*> & controlVolumes = m_modelComponent->controlVolumes();
 
-    if(index > -1)
+    if(m_times.size())
     {
-      double dtu = m_times[index]->modifiedJulianDay();
+      int index = findDateTimeIndex(dateTime);
 
-      if(dtu == dateTime)
+      if(index > -1)
+      {
+        double dtu = m_times[index]->modifiedJulianDay();
+
+        if(dtu == dateTime)
+        {
+          for(size_t i = 0; i < m_geometries.size() ; i++)
+          {
+            HCGeometry* geometry = m_geometries[i].data();
+            set<Edge*> & edges = m_edges[geometry];
+
+            double value = (*this)(index ,i);
+            double count = (double)edges.size();
+
+            if(count > 0.0)
+            {
+              value = max(value / count , 0.0);
+
+              for(Edge *edge : edges)
+              {
+                HCPolygon *tri = edge->leftInternal();
+                TriCV *cv = controlVolumes[tri->index()];
+
+                int faceIndex = edge->marker();
+                double denom = cv->faceDepths[faceIndex].value * cv->r_eta[faceIndex];
+
+                if(cv->faceDepths[faceIndex].value >= m_modelComponent->m_wetCellDepth)
+                {
+                  double vel = value / denom;
+                  cv->faceNormalVels[faceIndex].value =  vel;
+                  cv->faceNormalVels[faceIndex].associatedValue = value;
+                }
+                else
+                {
+                  cv->faceNormalVels[faceIndex].value = 0.0;
+                  cv->faceNormalVels[faceIndex].associatedValue = 0.0;
+                  cv->inflowOutflow += value;
+                }
+              }
+            }
+          }
+        }
+        else if(index - 1 > -1)
+        {
+          double dtl = m_times[index - 1]->modifiedJulianDay();
+          double factor  = (dateTime - dtl) / (dtu - dtl);
+
+          for(size_t i = 0; i < m_geometries.size() ; i++)
+          {
+            HCGeometry *geometry = m_geometries[i].data();
+            set<Edge*> & edges = m_edges[geometry];
+
+            double valueu = (*this)(index,i);
+            double valuel = (*this)(index - 1,i);
+
+            double value = valuel + factor * (valueu - valuel);
+
+            double count = (double)edges.size();
+
+
+            if(count > 0)
+            {
+              value = max(value / count , 0.0);
+
+
+              for(Edge *edge : edges)
+              {
+                HCPolygon *tri = edge->leftInternal();
+                TriCV *cv = controlVolumes[tri->index()];
+                int faceIndex = edge->marker();
+
+                double denom = cv->faceDepths[faceIndex].value * cv->r_eta[faceIndex];
+
+                if(cv->faceDepths[faceIndex].value >= m_modelComponent->m_wetCellDepth)
+                {
+                  double vel = value / denom;
+                  cv->faceNormalVels[faceIndex].value = vel;
+                  cv->faceNormalVels[faceIndex].associatedValue = value;
+                }
+                else
+                {
+                  cv->faceNormalVels[faceIndex].value = 0.0;
+                  cv->faceNormalVels[faceIndex].associatedValue = 0.0;
+                  cv->inflowOutflow += value;
+                }
+              }
+            }
+          }
+        }
+      }
+      else
       {
         for(size_t i = 0; i < m_geometries.size() ; i++)
         {
           HCGeometry* geometry = m_geometries[i].data();
           set<Edge*> & edges = m_edges[geometry];
 
-          double value = (*this)(index ,i);
-          double count = (double)edges.size();
-
-          if(count > 0.0)
+          for(Edge *edge : edges)
           {
-            value = max(value / count , 0.0);
+            HCPolygon *tri = edge->leftInternal();
+            TriCV *cv = controlVolumes[tri->index()];
+            int faceIndex = edge->marker();
 
-            for(Edge *edge : edges)
+            double denom = cv->faceDepths[faceIndex].value * cv->r_eta[faceIndex];
+
+            if(cv->faceDepths[faceIndex].value >= m_modelComponent->m_wetCellDepth)
             {
-              HCPolygon *tri = edge->leftInternal();
-              TriCV *cv = controlVolumes[tri->index()];
-
-              int faceIndex = edge->marker();
-              double denom = cv->faceDepths[faceIndex].value * cv->r_eta[faceIndex];
-
-              if(cv->faceDepths[faceIndex].value >= m_modelComponent->m_wetCellDepth)
-              {
-                double vel = value / denom;
-                cv->faceNormalVels[faceIndex].value =  vel;
-                cv->faceNormalVels[faceIndex].associatedValue = value;
-              }
-              else
-              {
-                cv->faceNormalVels[faceIndex].value = 0.0;
-                cv->faceNormalVels[faceIndex].associatedValue = 0.0;
-                cv->inflowOutflow += value;
-              }
+              double vel = max(m_defaultValue / denom , 0.0);
+              cv->faceNormalVels[faceIndex].value = vel;
+              cv->faceNormalVels[faceIndex].associatedValue = max(m_defaultValue,0.0);
             }
-          }
-        }
-      }
-      else if(index - 1 > -1)
-      {
-        double dtl = m_times[index - 1]->modifiedJulianDay();
-        double factor  = (dateTime - dtl) / (dtu - dtl);
-
-        for(size_t i = 0; i < m_geometries.size() ; i++)
-        {
-          HCGeometry *geometry = m_geometries[i].data();
-          set<Edge*> & edges = m_edges[geometry];
-
-          double valueu = (*this)(index,i);
-          double valuel = (*this)(index - 1,i);
-
-          double value = valuel + factor * (valueu - valuel);
-
-          double count = (double)edges.size();
-
-
-          if(count > 0)
-          {
-            value = max(value / count , 0.0);
-
-
-            for(Edge *edge : edges)
+            else
             {
-              HCPolygon *tri = edge->leftInternal();
-              TriCV *cv = controlVolumes[tri->index()];
-              int faceIndex = edge->marker();
-
-              double denom = cv->faceDepths[faceIndex].value * cv->r_eta[faceIndex];
-
-              if(cv->faceDepths[faceIndex].value >= m_modelComponent->m_wetCellDepth)
-              {
-                double vel = value / denom;
-                cv->faceNormalVels[faceIndex].value = vel;
-                cv->faceNormalVels[faceIndex].associatedValue = value;
-              }
-              else
-              {
-                cv->faceNormalVels[faceIndex].value = 0.0;
-                cv->faceNormalVels[faceIndex].associatedValue = 0.0;
-                cv->inflowOutflow += value;
-              }
+              cv->faceNormalVels[faceIndex].value = 0.0;
+              cv->faceNormalVels[faceIndex].associatedValue = 0.0;
+              cv->inflowOutflow += m_defaultValue;
             }
           }
         }
@@ -445,7 +482,7 @@ void OutletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevT
           {
             double vel = max(m_defaultValue / denom , 0.0);
             cv->faceNormalVels[faceIndex].value = vel;
-            cv->faceNormalVels[faceIndex].associatedValue = max(m_defaultValue,0.0);
+            cv->faceNormalVels[faceIndex].associatedValue = max(m_defaultValue, 0.0);
           }
           else
           {
@@ -453,36 +490,6 @@ void OutletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevT
             cv->faceNormalVels[faceIndex].associatedValue = 0.0;
             cv->inflowOutflow += m_defaultValue;
           }
-        }
-      }
-    }
-  }
-  else
-  {
-    for(size_t i = 0; i < m_geometries.size() ; i++)
-    {
-      HCGeometry* geometry = m_geometries[i].data();
-      set<Edge*> & edges = m_edges[geometry];
-
-      for(Edge *edge : edges)
-      {
-        HCPolygon *tri = edge->leftInternal();
-        TriCV *cv = controlVolumes[tri->index()];
-        int faceIndex = edge->marker();
-
-        double denom = cv->faceDepths[faceIndex].value * cv->r_eta[faceIndex];
-
-        if(cv->faceDepths[faceIndex].value >= m_modelComponent->m_wetCellDepth)
-        {
-          double vel = max(m_defaultValue / denom , 0.0);
-          cv->faceNormalVels[faceIndex].value = vel;
-          cv->faceNormalVels[faceIndex].associatedValue = max(m_defaultValue, 0.0);
-        }
-        else
-        {
-          cv->faceNormalVels[faceIndex].value = 0.0;
-          cv->faceNormalVels[faceIndex].associatedValue = 0.0;
-          cv->inflowOutflow += m_defaultValue;
         }
       }
     }

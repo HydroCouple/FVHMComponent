@@ -83,97 +83,96 @@ void PrecipBC::clear()
 
 void PrecipBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
 {
-  std::vector<TriCV*> & controlVolumes = m_modelComponent->m_controlVolumes;
 
-  if(m_times.size())
+  if(m_controlVolumes.size())
   {
-    //    double minQ = std::numeric_limits<double>::max();
-    //    double maxQ = std::numeric_limits<double>::lowest();
+    std::vector<TriCV*> & controlVolumes = m_modelComponent->m_controlVolumes;
 
-    int index = findDateTimeIndex(dateTime);
-
-    if(index > -1)
+    if(m_times.size())
     {
-      double dtu = m_times[index]->modifiedJulianDay();
+      int index = findDateTimeIndex(dateTime);
 
-      if(dtu == dateTime)
+      if(index > -1)
       {
-        double precipTotalInflow = 0;
+        double dtu = m_times[index]->modifiedJulianDay();
 
-
-        for(size_t i = 0; i < m_geometries.size() ; i++)
+        if(dtu == dateTime)
         {
-          HCPolygon* polygon = dynamic_cast<HCPolygon*>(m_geometries[i].data());
+          double precipTotalInflow = 0;
 
-          double value = (*this)(index ,i);
 
-          vector<int> & cvols = m_controlVolumes[polygon];
+          for(size_t i = 0; i < m_geometries.size() ; i++)
+          {
+            HCPolygon* polygon = dynamic_cast<HCPolygon*>(m_geometries[i].data());
+
+            double value = (*this)(index ,i);
+
+            vector<int> & cvols = m_controlVolumes[polygon];
 
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-          for(size_t g = 0; g < cvols.size(); g++)
-          {
-            TriCV *cv = controlVolumes[cvols[g]];
-            double inflowRate = value * cv->area * 2.7777777778e-7;
-            cv->inflowOutflow += inflowRate;
+            for(size_t g = 0; g < cvols.size(); g++)
+            {
+              TriCV *cv = controlVolumes[cvols[g]];
+              double inflowRate = value * cv->area * 2.7777777778e-7;
+              cv->inflowOutflow += inflowRate;
 
 #ifdef USE_OPENMP
 #pragma omp atomic
 #endif
-            precipTotalInflow += inflowRate;
+              precipTotalInflow += inflowRate;
+            }
           }
+
+          if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+          {
+            printf("FVHM Precip Total Q: %f\n",precipTotalInflow);
+          }
+
         }
-
-        if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+        else if(index - 1 > -1)
         {
-          printf("FVHM Precip Total Q: %f\n",precipTotalInflow);
-        }
+          double dtl = m_times[index - 1]->modifiedJulianDay();
+          double factor  = (dateTime - dtl) / (dtu - dtl);
+          double precipTotalInflow = 0.0;
 
-      }
-      else if(index - 1 > -1)
-      {
-        double dtl = m_times[index - 1]->modifiedJulianDay();
-        double factor  = (dateTime - dtl) / (dtu - dtl);
-        double precipTotalInflow = 0.0;
+          for(size_t i = 0; i < m_geometries.size() ; i++)
+          {
+            HCPolygon *polygon = dynamic_cast<HCPolygon*>(m_geometries[i].data());
+            double valueu = (*this)(index,i);
+            double valuel = (*this)(index - 1,i);
 
-        for(size_t i = 0; i < m_geometries.size() ; i++)
-        {
-          HCPolygon *polygon = dynamic_cast<HCPolygon*>(m_geometries[i].data());
-          double valueu = (*this)(index,i);
-          double valuel = (*this)(index - 1,i);
+            double value = valuel + factor * (valueu - valuel);
 
-          double value = valuel + factor * (valueu - valuel);
-
-          vector<int> & cvols = m_controlVolumes[polygon];
+            vector<int> & cvols = m_controlVolumes[polygon];
 
 #ifdef USE_OPENMP
 #pragma omp parallel for
 #endif
-          for(size_t g = 0; g < cvols.size(); g++)
-          {
-            TriCV *cv = controlVolumes[cvols[g]];
-            double inflowRate = value * cv->area * 2.7777777778e-7;
-            cv->inflowOutflow += inflowRate;
+            for(size_t g = 0; g < cvols.size(); g++)
+            {
+              TriCV *cv = controlVolumes[cvols[g]];
+              double inflowRate = value * cv->area * 2.7777777778e-7;
+              cv->inflowOutflow += inflowRate;
 
 #ifdef USE_OPENMP
 #pragma omp atomic
 #endif
-            precipTotalInflow += inflowRate;
+              precipTotalInflow += inflowRate;
+            }
           }
-        }
 
-        if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
-        {
-          printf("FVHM Precip Total Q: %f\n",precipTotalInflow);
-        }
+          if(m_modelComponent->m_printFrequencyCounter >= m_modelComponent->m_printFrequency)
+          {
+            printf("FVHM Precip Total Q: %f\n",precipTotalInflow);
+          }
 
+        }
       }
     }
   }
-
-  //    printf("Max Precip: %f, Min Precip: %f\n", maxQ, minQ);
 }
 
 int PrecipBC::findDateTimeIndex(double dateTime)

@@ -141,7 +141,7 @@ void InflowInput::retrieveValuesFromProvider()
   moveDataToPrevTime();
 
   size_t currentTimeIndex = m_times.size() - 1;
-  m_times[currentTimeIndex]->setModifiedJulianDay(m_FVHMComponent->currentDateTime());
+  m_times[currentTimeIndex]->setModifiedJulianDay(m_FVHMComponent->currentDateTime()->modifiedJulianDay());
 
   for(IOutput* output : m_providers)
   {

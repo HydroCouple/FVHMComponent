@@ -15,9 +15,7 @@ SparseMatrix::SparseMatrix(int ilower, int iupper, int columnCount, int maxColSi
   m_ilower(ilower),
   m_iupper(iupper)
 {
-  //  m_rows = new int[m_rowCount];
   m_ncols = new int[m_rowCount];
-
   m_colIndexes = new int*[m_rowCount];
   m_values = new double*[m_rowCount];
 
@@ -26,7 +24,6 @@ SparseMatrix::SparseMatrix(int ilower, int iupper, int columnCount, int maxColSi
 #endif
   for(int i = 0 ; i < m_rowCount ; i++)
   {
-//    m_rows[i] = i + ilower;
     m_ncols[i] = 0;
 
     int *colIndexes = new int[m_maxColSize];
@@ -43,12 +40,8 @@ SparseMatrix::SparseMatrix(int ilower, int iupper, int columnCount, int maxColSi
 
 SparseMatrix::~SparseMatrix()
 {
-  //  delete[] m_rows;
   delete[] m_ncols;
 
-#ifdef USE_OPENMP
-#pragma omp parallel for
-#endif
   for(int i = 0 ; i < m_rowCount ; i++)
   {
     delete[] m_colIndexes[i];
