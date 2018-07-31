@@ -82,7 +82,7 @@ void InitialWSEBC::prepare()
 
 void InitialWSEBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
 {
-  if(dateTime == m_modelComponent->currentDateTime()->modifiedJulianDay())
+  if(dateTime == m_modelComponent->currentDateTime()->julianDay())
   {
     std::unordered_map<HCTriangle*,std::set<TriCV*>>::iterator it;
 

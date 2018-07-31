@@ -284,7 +284,7 @@ void FVHMComponent::getMinIOutputTime(const HydroCouple::IOutput *output, double
     if(tComponentDataItem && tComponentDataItem->timeCount())
     {
       int lastTime = tComponentDataItem->timeCount() - 1;
-      minTime = min(minTime,tComponentDataItem->time(lastTime)->modifiedJulianDay());
+      minTime = min(minTime,tComponentDataItem->time(lastTime)->julianDay());
     }
   }
 
@@ -309,9 +309,7 @@ void FVHMComponent::prepareForNextTimeStep(double &minU, double &maxU, double &m
   maxZ = std::numeric_limits<double>::lowest();
   minZ = std::numeric_limits<double>::max();
 
-#ifdef USE_OPENMP
-#pragma omp parallel for
-#endif
+
   for(int i = 0 ; i < m_numCells ; i++)
   {
     TriCV *cv = m_controlVolumes[i];
@@ -350,7 +348,7 @@ void FVHMComponent::setWetAndContCells()
     cv->contResidualIter = cv->velResidualIter[0] = cv->velResidualIter[1] =
         cv->isWetOrHasWetNeigh = cv->wetIndex = cv->contIndex = 0.0;
 
-    if(cv->h->value > m_wetCellDepth)
+    if(cv->minNodeDepth > m_wetCellDepth)
     {
       cv->isWetOrHasWetNeigh = 1;
       cv->wetIndex = 1;
@@ -1123,13 +1121,13 @@ FVHMComponent::ErrorCode FVHMComponent::solveMomentumEquations(double tStep, int
 
     //if(!isInfOrNan(cv->friction[uv]))
     {
-      friction = -cv->friction[uv];
+      friction = -cv->friction[uv] * cv->vel[uv].value;
 
       if(m_useWall)
       {
         for(int f = 0 ; f < cv->numEdges; f++)
         {
-          friction -= cv->wallShearFriction[uv][f];
+          friction -= cv->wallShearFriction[uv][f] * cv->vel[uv].value;
         }
       }
     }
@@ -2174,7 +2172,7 @@ void FVHMComponent::calculateFriction(TriCV *cv, int uv)
   double umag = hypot(cv->vel[0].value, cv->vel[1].value);
   double frictionVel = sqrt(cf * umag * umag);
 
-  double friction =  cf * umag * cv->vel[uv].value * cv->area;
+  double friction =  cf * umag * /*cv->vel[uv].value **/ cv->area;
   cv->friction[uv] = friction;
 
   if(m_useWall)
@@ -2187,7 +2185,7 @@ void FVHMComponent::calculateFriction(TriCV *cv, int uv)
       if(cv->faceNormalVels[i].calculateWallShearStress && relp > 0.0)
       {
         double yp = frictionVel * relp  / m_viscosity;
-        double wallShear = frictionVel * 0.41 * cv->vel[uv].value * cv->faceDepths[i].value * cv->r_eta[i] / log(9.758 * yp);
+        double wallShear = frictionVel * 0.41 */* cv->vel[uv].value **/ cv->faceDepths[i].value * cv->r_eta[i] / log(9.758 * yp);
         cv->wallShearFriction[uv][i] = wallShear;
       }
       else
@@ -2364,14 +2362,14 @@ void FVHMComponent::calculateCellEddyViscosities()
 void FVHMComponent::calculateCellWSEGradients()
 {
 
-#ifdef USE_OPENMP
-#pragma omp parallel sections
-#endif
+//#ifdef USE_OPENMP
+//#pragma omp parallel sections
+//#endif
   {
 
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
+//#ifdef USE_OPENMP
+//#pragma omp section
+//#endif
     {
       double zx = 0.0;
       double zy = 0.0;
@@ -2432,71 +2430,71 @@ void FVHMComponent::calculateCellWSEGradients()
       }
     }
 
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-    {
-      double hx = 0.0;
-      double hy = 0.0;
+//#ifdef USE_OPENMP
+//#pragma omp section
+//#endif
+//    {
+//      double hx = 0.0;
+//      double hy = 0.0;
 
-      int iters = 0;
+//      int iters = 0;
 
-      do
-      {
+//      do
+//      {
 
-        hx = 0.0;
-        hy = 0.0;
+//        hx = 0.0;
+//        hy = 0.0;
 
 
-#ifdef USE_OPENMP
-#pragma omp parallel for
-#endif
-        for (int i = 0; i < m_numContCells; i++)
-        {
-          int cvIndex = m_contCells[i];
-          TriCV *cv = m_controlVolumes[cvIndex];
+//#ifdef USE_OPENMP
+//#pragma omp parallel for
+//#endif
+//        for (int i = 0; i < m_numContCells; i++)
+//        {
+//          int cvIndex = m_contCells[i];
+//          TriCV *cv = m_controlVolumes[cvIndex];
 
-          double gradhx = cv->grad_h->v[0];
-          double gradhy = cv->grad_h->v[1];
+//          double gradhx = cv->grad_h->v[0];
+//          double gradhy = cv->grad_h->v[1];
 
-          cv->calculateDepthGradient();
+//          cv->calculateDepthGradient();
 
-          double tmphx = fabs(cv->grad_h->v[0] - gradhx);
-          double tmphy = fabs(cv->grad_h->v[1] - gradhy);
+//          double tmphx = fabs(cv->grad_h->v[0] - gradhx);
+//          double tmphy = fabs(cv->grad_h->v[1] - gradhy);
 
-          if (tmphx > hx)
-          {
-#ifdef USE_OPENMP
-#pragma omp atomic read
-#endif
-            hx = tmphx;
-          }
+//          if (tmphx > hx)
+//          {
+//#ifdef USE_OPENMP
+//#pragma omp atomic read
+//#endif
+//            hx = tmphx;
+//          }
 
-          if (tmphy > hy)
-          {
-#ifdef USE_OPENMP
-#pragma omp atomic read
-#endif
-            hy = tmphy;
-          }
-        }
+//          if (tmphy > hy)
+//          {
+//#ifdef USE_OPENMP
+//#pragma omp atomic read
+//#endif
+//            hy = tmphy;
+//          }
+//        }
 
-        iters++;
+//        iters++;
 
-      } while (hx > 1e-6 && hy > 1e-6 && iters < 1000);
+//      } while (hx > 1e-6 && hy > 1e-6 && iters < 1000);
 
-      if (iters >= 1000)
-      {
-        printf("dz_x: %f\tdz_y: %f\tNum iters: %i\n", hx, hy, iters);
-      }
-    }
+//      if (iters >= 1000)
+//      {
+//        printf("dz_x: %f\tdz_y: %f\tNum iters: %i\n", hx, hy, iters);
+//      }
+//    }
 
-#ifdef USE_OPENMP
-#pragma omp section
-#endif
-    {
-      calculateCellZCorrGradients();
-    }
+//#ifdef USE_OPENMP
+//#pragma omp section
+//#endif
+//    {
+//      calculateCellZCorrGradients();
+//    }
   }
 
 
@@ -2595,7 +2593,7 @@ FVHMComponent::ErrorCode FVHMComponent::mpiSolve(const SparseMatrix &A, const do
 
       int start = rowsPerProc + remRows;
 
-      for(int i = 1; i < m_mpiAllocatedProcessesArray.size() ; i++)
+      for(size_t i = 1; i < m_mpiAllocatedProcessesArray.size() ; i++)
       {
         int procRank =  m_mpiAllocatedProcessesArray[i];
 
@@ -2626,7 +2624,7 @@ FVHMComponent::ErrorCode FVHMComponent::mpiSolve(const SparseMatrix &A, const do
       result = solve(m_ComponentMPIComm, A, A.ilower(), start - 1, b, x, residuals, relativeResidualNorm, numIterations);
 
       //recieve solutions
-      for(int i = 1; i < m_mpiAllocatedProcessesArray.size() ; i++)
+      for(size_t i = 1; i < m_mpiAllocatedProcessesArray.size() ; i++)
       {
         int procRank =  m_mpiAllocatedProcessesArray[i];
 
@@ -3034,12 +3032,12 @@ double FVHMComponent::l2Norm(const double residuals[], int length)
     double v = residuals[i];
 
 #ifdef USE_OPENMP
-#pragma omp atomic
+#pragma omp atomic update
 #endif
     value += v * v;
   }
 
-  return value > 0.0 ? sqrt(value) : 0.0;
+  return value > 0.0 ? sqrt(value)/*/ (1.0 * length)*/ : 0.0;
 }
 
 double FVHMComponent::relativeResidualNorm(const double residuals[], const double values[], int length)

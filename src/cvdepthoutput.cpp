@@ -42,9 +42,9 @@ void CVDepthOutput::updateValues(HydroCouple::IInput *querySpecifier)
 
   if(timeExchangeItem)
   {
-   double queryTime = timeExchangeItem->time(timeExchangeItem->timeCount() - 1)->modifiedJulianDay();
+   double queryTime = timeExchangeItem->time(timeExchangeItem->timeCount() - 1)->julianDay();
 
-    while (m_FVHMComponent->currentDateTime()->modifiedJulianDay() < queryTime &&
+    while (m_FVHMComponent->currentDateTime()->julianDay() < queryTime &&
            m_FVHMComponent->status() == IModelComponent::Updated)
     {
       m_FVHMComponent->update(QList<IOutput*>({this}));
@@ -66,7 +66,7 @@ void CVDepthOutput::updateValues()
   moveDataToPrevTime();
 
   int currentTimeIndex = timeCount() - 1;
-  m_times[currentTimeIndex]->setModifiedJulianDay(m_FVHMComponent->currentDateTime()->modifiedJulianDay());
+  m_times[currentTimeIndex]->setJulianDay(m_FVHMComponent->currentDateTime()->julianDay());
   resetTimeSpan();
 
   const std::vector<TriCV*>& controlVolumes = m_FVHMComponent->controlVolumes();

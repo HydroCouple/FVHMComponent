@@ -118,7 +118,7 @@ void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTi
 
       if(index > -1)
       {
-        double dtu = m_times[index]->modifiedJulianDay();
+        double dtu = m_times[index]->julianDay();
 
         if(dtu == dateTime)
         {
@@ -172,7 +172,7 @@ void InletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevTi
         }
         else if(index - 1 > -1)
         {
-          double dtl = m_times[index - 1]->modifiedJulianDay();
+          double dtl = m_times[index - 1]->julianDay();
           double factor  = (dateTime - dtl) / (dtu - dtl);
 
           for(size_t i = 0; i < m_geometries.size() ; i++)
@@ -344,7 +344,7 @@ void OutletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevT
 
       if(index > -1)
       {
-        double dtu = m_times[index]->modifiedJulianDay();
+        double dtu = m_times[index]->julianDay();
 
         if(dtu == dateTime)
         {
@@ -386,7 +386,7 @@ void OutletFlowBCArgument::applyBoundaryConditions(double dateTime, double prevT
         }
         else if(index - 1 > -1)
         {
-          double dtl = m_times[index - 1]->modifiedJulianDay();
+          double dtl = m_times[index - 1]->julianDay();
           double factor  = (dateTime - dtl) / (dtu - dtl);
 
           for(size_t i = 0; i < m_geometries.size() ; i++)

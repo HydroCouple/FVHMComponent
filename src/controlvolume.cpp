@@ -413,14 +413,15 @@ void TriCV::calculateAdjacentCellParams()
       //      r_p_corr[i] = (edgeC - Vect::dotProduct(edgeC - (*center) , e_n[i]) * e_n[i]) - (*center);
       //      r_n_corr[i] = (edgeC - Vect::dotProduct(edgeC - (*cvn->center) , e_n[i]) * e_n[i]) - (*cvn->center);
 
-      double sig1 = r_e_l[i];
+      //      double sig1 = r_e_l[i];
       //      double sg1 = Vect::dotProduct(r_e[i], e_n[i]);
 
-      //      double sig2 = r2.length();
+      double sig2 = r2.length();
       //      double sg2 = Vect::dotProduct(-1.0 * r2, e_n[i]);
 
       //w_l[i] = (1.0 / (sig2 * sig2)) / ((1.0 / (sig2 * sig2)) + (1.0 / (sig1 * sig1)));
-      w_l[i] = sig1 / (sig1 + r2.length());
+      //      w_l[i] = sig1 / (sig1 + r2.length());
+      w_l[i] = 1.0 - sig2 / lpn;
       //cx[i] = Vect::dotProduct(-sg1 * r2 - sg2 * r_e[i], eta[i]) / ((sg1 + sg2) * r_eta[i] * r_eta[i]);
 
       //      r_e_n[i] = r2;
@@ -617,6 +618,8 @@ void TriCV::copyVariablesToPrev()
 
 void TriCV::calculateEdgeDepths()
 {
+  minNodeDepth = 1e40;
+
   for(int i = 0; i < numEdges; i++)
   {
     VarBC &faceDepth = faceDepths[i];
@@ -644,8 +647,8 @@ void TriCV::calculateEdgeDepths()
       }
       else
       {
-//        edgeDepth =  h->value + Vect::dotProduct(*grad_h, r_e[i]);
-        edgeZ =  h->value + Vect::dotProduct(*grad_h, r_e[i]);
+        //        edgeDepth =  h->value + Vect::dotProduct(*grad_h, r_e[i]);
+        edgeZ =  z->value + Vect::dotProduct(*grad_z, r_e[i]);
       }
 
       //      edgeDepth = max(0.0, edgeDepth);
@@ -672,6 +675,8 @@ void TriCV::calculateEdgeDepths()
         faceDepth.associatedValue = edgeZ;
       }
     }
+
+    minNodeDepth = min(faceDepth.value, minNodeDepth);
   }
 }
 
@@ -849,8 +854,6 @@ void TriCV::calculateZCorrGradient()
 void TriCV::calculateNodeElevations()
 {
 
-  minNodeDepth = 0.0;
-
   for(int i = 0; i < numEdges ; i++)
   {
     double totalValue = 0;
@@ -876,14 +879,15 @@ void TriCV::calculateNodeElevations()
     }
   }
 
-  minNodeDepth = nWSE[0]- nz[0];
 
-  for(int i = 1; i < numEdges; i++)
-  {
-    minNodeDepth = min(minNodeDepth, nWSE[i] - nz[i]);
-  }
+  //  minNodeDepth = max(0.0, nWSE[0]- nz[0]);
 
-  nWSE[numEdges] = nWSE[0];
+  //  for(int i = 1; i < numEdges; i++)
+  //  {
+  //    minNodeDepth = min(minNodeDepth, nWSE[i] - nz[i]);
+  //  }
+
+  //  nWSE[numEdges] = nWSE[0];
 }
 
 void TriCV::calculateVelocityGradient()
@@ -1064,8 +1068,16 @@ void TriCV::calculateFaceVelocities()
 
           double wl_n = w_l[i];
           double wl_p = 1.0 - wl_n;
-          double ux = wl_p * vel[0].value + wl_n * cvn->vel[0].value + Vect::dotProduct(grad_vel[0], df[i]);
-          double uy = wl_p * vel[1].value + wl_n * cvn->vel[1].value + Vect::dotProduct(grad_vel[1], df[i]);
+
+          double gradUx = wl_p * grad_vel[0].v[0] + wl_n * cvn->grad_vel[0].v[0];
+          double gradUy = wl_p * grad_vel[0].v[1] + wl_n * cvn->grad_vel[0].v[1];
+
+          double gradVx = wl_p * grad_vel[1].v[0] + wl_n * cvn->grad_vel[1].v[0];
+          double gradVy = wl_p * grad_vel[1].v[1] + wl_n * cvn->grad_vel[1].v[1];
+
+          double ux = wl_p * vel[0].value + wl_n * cvn->vel[0].value + Vect::dotProduct(gradUx, gradUy, 0.0, df[i]);
+          double uy = wl_p * vel[1].value + wl_n * cvn->vel[1].value + Vect::dotProduct(gradVx, gradVy, 0.0, df[i]);
+
           v1 = Vect::dotProduct(ux,uy,0.0, e_n[i]);
           evel = min(0.0, v1);
         }
@@ -1080,8 +1092,16 @@ void TriCV::calculateFaceVelocities()
 
           double wl_n = w_l[i];
           double wl_p = 1.0 - wl_n;
-          double ux = wl_p * vel[0].value + wl_n * cvn->vel[0].value + Vect::dotProduct(grad_vel[0], df[i]);
-          double uy = wl_p * vel[1].value + wl_n * cvn->vel[1].value + Vect::dotProduct(grad_vel[1], df[i]);
+
+          double gradUx = wl_p * grad_vel[0].v[0] + wl_n * cvn->grad_vel[0].v[0];
+          double gradUy = wl_p * grad_vel[0].v[1] + wl_n * cvn->grad_vel[0].v[1];
+
+          double gradVx = wl_p * grad_vel[1].v[0] + wl_n * cvn->grad_vel[1].v[0];
+          double gradVy = wl_p * grad_vel[1].v[1] + wl_n * cvn->grad_vel[1].v[1];
+
+          double ux = wl_p * vel[0].value + wl_n * cvn->vel[0].value + Vect::dotProduct(gradUx, gradUy, 0.0, df[i]);
+          double uy = wl_p * vel[1].value + wl_n * cvn->vel[1].value + Vect::dotProduct(gradVx, gradVy, 0.0, df[i]);
+
           v1 = Vect::dotProduct(ux,uy,0.0, e_n[i]);
           evel = max(0.0, v1);
         }

@@ -4,7 +4,7 @@
 #include "controlvolume.h"
 #include "core/idbasedargument.h"
 #include "core/valuedefinition.h"
-#include "core/idbasedexchangeitems.h"
+#include "core/idbasedinputs.h"
 #include "core/componentstatuschangeeventargs.h"
 #include "core/unit.h"
 #include "core/idbasedargument.h"
@@ -188,7 +188,7 @@ void FVHMComponent::update(const QList<HydroCouple::IOutput*> &requiredOutputs)
         //apply new boundary conditions for  next next timestep/current if iteration
         applyBoundaryConditions(m_currentDateTime);
 
-        currentDateTimeInternal()->setModifiedJulianDay(m_currentDateTime);
+        currentDateTimeInternal()->setJulianDay(m_currentDateTime);
       }
       //or perform iteration
       else
@@ -488,7 +488,7 @@ double FVHMComponent::endDateTime() const
   return m_endDateTime;
 }
 
-void FVHMComponent::intializeFailureCleanUp()
+void FVHMComponent::initializeFailureCleanUp()
 {
   closeLogFile();
 }
@@ -1119,8 +1119,8 @@ bool FVHMComponent::initializeTimeArguments(QString &message)
   }
   else
   {
-    m_startDateTime =  SDKTemporal::DateTime::toModifiedJulianDays(startDateTime);
-    m_endDateTime = SDKTemporal::DateTime::toModifiedJulianDays(endDateTime);
+    m_startDateTime =  SDKTemporal::DateTime::toJulianDays(startDateTime);
+    m_endDateTime = SDKTemporal::DateTime::toJulianDays(endDateTime);
     m_currentDateTime = m_startDateTime;
     progressChecker()->reset(m_startDateTime, m_endDateTime);
   }
@@ -1150,9 +1150,9 @@ bool FVHMComponent::initializeTimeArguments(QString &message)
   m_nextOutputTime = m_currentDateTime;
   m_qtDateTime = SDKTemporal::DateTime(m_currentDateTime).dateTime();
 
-  timeHorizonInternal()->setModifiedJulianDay(m_startDateTime);
+  timeHorizonInternal()->setJulianDay(m_startDateTime);
   timeHorizonInternal()->setDuration(m_endDateTime - m_startDateTime);
-  currentDateTimeInternal()->setModifiedJulianDay(m_currentDateTime);
+  currentDateTimeInternal()->setJulianDay(m_currentDateTime);
 
   if(m_currentDateTime + (m_outputTimeStep / 1440.00) > m_endDateTime)
   {

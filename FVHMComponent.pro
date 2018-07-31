@@ -1,7 +1,7 @@
 #Author Caleb Amoa Buahin
 #Email caleb.buahin@gmail.com
-#Date 2016
-#License GNU General Public License (see <http://www.gnu.org/licenses/> for details).
+#Date 2015-2018
+#License GNU Lesser General Public License (see <http: //www.gnu.org/licenses/> for details).
 
 
 TARGET = FVHMComponent
@@ -11,23 +11,19 @@ DEFINES += FVHMCOMPONENT_LIBRARY
 DEFINES += UTAH_CHPC
 DEFINES += USE_OPENMP
 DEFINES += USE_MPI
-#DEFINES += USE_HYPRE_OPENMP
+DEFINES += USE_HYPRE_OPENMP
 #DEFINES += USE_SUITESPARSE
 
 CONFIG += c++11
 CONFIG += debug_and_release
 
 contains(DEFINES,FVHMCOMPONENT_LIBRARY){
-
   TEMPLATE = lib
   message("Compiling as library")
-
 } else {
-
   TEMPLATE = app
   CONFIG-=app_bundle
   message("Compiling as application")
-
 }
 
 
@@ -108,10 +104,9 @@ macx{
 
 
       message("OpenMP enabled")
-
-    } else {
+     } else {
       message("OpenMP disabled")
-    }
+     }
 
 
     contains(DEFINES,USE_HYPRE_OPENMP){
@@ -129,10 +124,9 @@ macx{
 
 
       message("OpenMP enabled")
-
-    } else {
+     } else {
       message("OpenMP disabled")
-    }
+     }
 
     contains(DEFINES,USE_MPI){
 
@@ -140,19 +134,17 @@ macx{
         QMAKE_CXX = /usr/local/bin/mpicxx
         QMAKE_LINK = /usr/local/bin/mpicxx
 
-        QMAKE_CFLAGS += $$system(mpicc --showme:compile)
-        QMAKE_CXXFLAGS += $$system(mpic++ --showme:compile)
-        QMAKE_LFLAGS += $$system(mpic++ --showme:link)
+        QMAKE_CFLAGS += $$system(/usr/local/bin/mpicc --showme:compile)
+        QMAKE_CXXFLAGS += $$system(/usr/local/bin/mpic++ --showme:compile)
+        QMAKE_LFLAGS += $$system(/usr/local/bin/mpic++ --showme:link)
 
         LIBS += -L/usr/local/lib/ -lmpi
 
       message("MPI enabled")
-
-    } else {
+     } else {
       message("MPI disabled")
-    }
-
- }
+     }
+}
 
 linux{
 
@@ -165,17 +157,16 @@ LIBS += -L/usr/lib/ogdi -lgdal \
     contains(DEFINES,UTAH_CHPC){
 
          INCLUDEPATH += /uufs/chpc.utah.edu/sys/installdir/hdf5/1.8.17-c7/include \
-                        /uufs/chpc.utah.edu/sys/installdir/netcdf-c/4.3.3.1/include \
-                        /uufs/chpc.utah.edu/sys/installdir/netcdf-cxx/4.3.0-c7/include \
+                        /uufs/chpc.utah.edu/sys/installdir/netcdf-c/4.4.1/include \
+                        ../netcdf-cxx4-4.3.0/installdir/include \
                         ./../HYPRE/hypre-2.11.2/include
-
 
          LIBS += -L/uufs/chpc.utah.edu/sys/installdir/hdf5/1.8.17-c7/lib -lhdf5 \
                  -L/uufs/chpc.utah.edu/sys/installdir/netcdf-cxx/4.3.0-c7/lib -lnetcdf_c++4 \
                  -L./../HYPRE/hypre-2.11.2/lib -lHYPRE
 
          message("Compiling on CHPC")
-    }
+     }
 
 
     contains(DEFINES,USE_MPI){
@@ -184,16 +175,16 @@ LIBS += -L/usr/lib/ogdi -lgdal \
         QMAKE_CXX = mpic++
         QMAKE_LINK = mpic++
 
-        QMAKE_CFLAGS += $$system(mpicc --showme:compile)
-        QMAKE_CXXFLAGS += $$system(mpic++ --showme:compile)
-        QMAKE_LFLAGS += $$system(mpic++ --showme:link)
+        QMAKE_CFLAGS += $$system(/usr/local/bin/mpicc --showme:compile)
+        QMAKE_CXXFLAGS += $$system(/usr/local/bin/mpic++ --showme:compile)
+        QMAKE_LFLAGS += $$system(/usr/local/bin/mpic++ --showme:link)
 
         LIBS += -L/usr/local/lib/ -lmpi
 
       message("MPI enabled")
-    } else {
+     } else {
       message("MPI disabled")
-    }
+     }
 
     contains(DEFINES,USE_OPENMP){
 
@@ -204,9 +195,9 @@ LIBS += -L/usr/lib/ogdi -lgdal \
     LIBS += -L/usr/lib/x86_64-linux-gnu -lgomp
 
       message("OpenMP enabled")
-    } else {
+     } else {
       message("OpenMP disabled")
-    }
+     }
 }
 
 CONFIG(debug, debug|release) {
@@ -218,50 +209,24 @@ CONFIG(debug, debug|release) {
    UI_DIR = $$DESTDIR/.ui
 
    macx{
-    LIBS += -L./../HydroCoupleSDK/build/debug -lHydroCoupleSDK
-   }
+    LIBS += -L./../HydroCoupleSDK/build/debug -lHydroCoupleSDK.1.0.0
+    QMAKE_POST_LINK += "cp -a ./../HydroCoupleSDK/build/debug/*HydroCoupleSDK* ./build/debug/";
+     }
 
    linux{
-    LIBS += -L./../HydroCoupleSDK/build/debug -lHydroCoupleSDK
-   }
+    LIBS += -L./../HydroCoupleSDK/build/debug -lHydroCoupleSDK.so.1.0.0
+    QMAKE_POST_LINK += "cp -a ./../HydroCoupleSDK/build/debug/*HydroCoupleSDK* ./build/debug/";
+     }
 
+   win32{
+    LIBS += -L./../HydroCoupleSDK/build/debug -lHydroCoupleSDK1
+    QMAKE_POST_LINK += "copy ./../HydroCoupleSDK/build/debug/*HydroCoupleSDK* ./build/debug/";
+     }
 
    message("Debug mode...")
 }
 
 CONFIG(release, debug|release) {
-
-     contains(DEFINES,FVHMCOMPONENT_LIBRARY){
-         #MacOS
-         macx{
-             DESTDIR = lib/macx
-         }
-
-         #Linux
-         linux{
-             DESTDIR = lib/linux
-         }
-
-         #Windows
-         win32{
-             DESTDIR = lib/win32
-         }
-     } else {
-         #MacOS
-         macx{
-             DESTDIR = bin/macx
-         }
-
-         #Linux
-         linux{
-             DESTDIR = bin/linux
-         }
-
-         #Windows
-         win32{
-             DESTDIR = bin/win32
-         }
-     }
 
     RELEASE_EXTRAS = ./build/release
     OBJECTS_DIR = $$RELEASE_EXTRAS/.obj
@@ -270,19 +235,59 @@ CONFIG(release, debug|release) {
     UI_DIR = $$RELEASE_EXTRAS/.ui
 
    macx{
-    LIBS += -L./../HydroCoupleSDK/lib/macx -lHydroCoupleSDK
-   }
+    LIBS += -L./../HydroCoupleSDK/lib/macx -lHydroCoupleSDK.1.0.0
+     }
 
    linux{
-    LIBS += -L./../HydroCoupleSDK/lib/linux -lHydroCoupleSDK
-   }
+    LIBS += -L./../HydroCoupleSDK/lib/linux -lHydroCoupleSDK.1.0.0
+     }
 
    win32{
     LIBS += -L./../HydroCoupleSDK/lib/win32 -lHydroCoupleSDK1
-   }
+     }
+
+
+     contains(DEFINES,FVHMCOMPONENT_LIBRARY){
+         #MacOS
+         macx{
+             DESTDIR = lib/macx
+             QMAKE_POST_LINK += "cp -a ./../HydroCoupleSDK/lib/macx/*HydroCoupleSDK* ./lib/macx";
+          }
+
+         #Linux
+         linux{
+             DESTDIR = lib/linux
+             QMAKE_POST_LINK += "cp -a ./../HydroCoupleSDK/lib/linux/*HydroCoupleSDK* ./lib/linux";
+          }
+
+         #Windows
+         win32{
+             DESTDIR = lib/win32
+             QMAKE_POST_LINK += "xcopy ./../HydroCoupleSDK/lib/win32/*HydroCoupleSDK* ./lib/win32";
+          }
+     } else {
+         #MacOS
+         macx{
+             DESTDIR = bin/macx
+             QMAKE_POST_LINK += "cp -a ./../HydroCoupleSDK/lib/macx/*HydroCoupleSDK* ./bin/macx";
+          }
+
+         #Linux
+         linux{
+             DESTDIR = bin/linux
+             QMAKE_POST_LINK += "cp -a ./../HydroCoupleSDK/lib/linux/*HydroCoupleSDK* ./bin/linux";
+          }
+
+         #Windows
+         win32{
+             DESTDIR = bin/win32
+             QMAKE_POST_LINK += "xcopy ./../HydroCoupleSDK/lib/win32/*HydroCoupleSDK* ./bin/win32";
+          }
+     }
 
    message("Release mode...")
 }
+
 
 contains(DEFINES,USE_SUITESPARSE){
 
@@ -293,6 +298,4 @@ LIBS += -L../SuiteSparse/lib -lspqr \
         -L../SuiteSparse/lib -lcholmod \
         -L../SuiteSparse/lib -lamd \
         -L../SuiteSparse/lib -lcolamd
-
-
 }

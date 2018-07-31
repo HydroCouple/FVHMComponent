@@ -63,8 +63,6 @@ bool FVHMComponent::initializeNetCDFOutputFile(QString &message)
       m_outputNetCDF = nullptr;
     }
 
-
-
     GeometryFactory::writeTINToNetCDF(m_TINMeshArgument->TINInternal(), m_outputNetCDFFile.absoluteFilePath(), message);
 
     try
@@ -446,9 +444,6 @@ void FVHMComponent::writeToNetCDF()
 {
   try
   {
-
-
-
 
     if(m_outputNetCDF && !m_outputNetCDF->isNull())
     {

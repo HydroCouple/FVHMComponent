@@ -94,7 +94,7 @@ void PrecipBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
 
       if(index > -1)
       {
-        double dtu = m_times[index]->modifiedJulianDay();
+        double dtu = m_times[index]->julianDay();
 
         if(dtu == dateTime)
         {
@@ -134,7 +134,7 @@ void PrecipBC::applyBoundaryConditions(double dateTime, double prevTimeStep)
         }
         else if(index - 1 > -1)
         {
-          double dtl = m_times[index - 1]->modifiedJulianDay();
+          double dtl = m_times[index - 1]->julianDay();
           double factor  = (dateTime - dtl) / (dtu - dtl);
           double precipTotalInflow = 0.0;
 
@@ -182,7 +182,7 @@ int PrecipBC::findDateTimeIndex(double dateTime)
 
   do
   {
-    if(m_times[timeCursor()->index()]->modifiedJulianDay() >= dateTime)
+    if(m_times[timeCursor()->index()]->julianDay() >= dateTime)
     {
       index = timeCursor()->index();
       break;

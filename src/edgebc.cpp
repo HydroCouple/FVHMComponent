@@ -138,7 +138,7 @@ int TimeEdgeBC::findDateTimeIndex(double dateTime)
 
   do
   {
-    if(m_times[timeCursor()->index()]->modifiedJulianDay() >= dateTime)
+    if(m_times[timeCursor()->index()]->julianDay() >= dateTime)
     {
       index = timeCursor()->index();
       break;

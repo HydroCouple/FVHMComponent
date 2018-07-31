@@ -18,7 +18,7 @@ FVHMComponentInfo::FVHMComponentInfo(QObject *parent)
    setVendor("www.hydrocouple.org");
    setUrl("www.hydrocouple.org");
    setEmail("caleb.buahin@aggiemail.usu.edu");
-   setVersion("1.0.0.0 ");
+   setVersion("1.0.0 ");
    createAdaptedOutputFactories();
 }
 
